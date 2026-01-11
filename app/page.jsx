@@ -1,0 +1,771 @@
+'use client';
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { supabase } from '../lib/supabaseClient';
+
+const EMOJIS = ['❤️', '😂', '👍', '😮', '😢', '😡'];
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
+
+const formatTime = (value) => {
+  if (!value) return '';
+  const date = new Date(value);
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+export default function Home() {
+  const [username, setUsername] = useState('');
+  const [usernameInput, setUsernameInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [isAuthed, setIsAuthed] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [configError, setConfigError] = useState('');
+
+  const [messages, setMessages] = useState([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [newMessage, setNewMessage] = useState('');
+  const [replyTo, setReplyTo] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [editingText, setEditingText] = useState('');
+  const [reactionTarget, setReactionTarget] = useState(null);
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [lastReadAt, setLastReadAt] = useState(null);
+  const [unread, setUnread] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [swipeMessageId, setSwipeMessageId] = useState(null);
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const [isSwiping, setIsSwiping] = useState(false);
+  const [swipePulse, setSwipePulse] = useState(null);
+
+  const listRef = useRef(null);
+  const bottomRef = useRef(null);
+  const stickToBottomRef = useRef(true);
+  const swipeMetaRef = useRef({ startX: 0, startY: 0, active: false, isOwn: false });
+  const swipePulseRef = useRef(null);
+
+  const isConfigured = Boolean(
+    process.env.NEXT_PUBLIC_SUPABASE_URL &&
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
+      process.env.NEXT_PUBLIC_CHAT_PASSWORD
+  );
+
+  useEffect(() => {
+    if (!isConfigured) {
+      setConfigError(
+        'Missing environment variables. Check NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and NEXT_PUBLIC_CHAT_PASSWORD.'
+      );
+    }
+  }, [isConfigured]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = window.localStorage.getItem('chat_username');
+    if (saved) {
+      setUsername(saved);
+    }
+  }, []);
+
+  const messageMap = useMemo(() => {
+    return messages.reduce((acc, message) => {
+      acc[message.id] = message;
+      return acc;
+    }, {});
+  }, [messages]);
+
+  useEffect(() => {
+    if (!isAuthed || !username || !isConfigured) return;
+    let isMounted = true;
+
+    const loadMessages = async () => {
+      setLoadingMessages(true);
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error(error);
+      }
+
+      if (isMounted) {
+        setMessages(data || []);
+        setLoadingMessages(false);
+      }
+    };
+
+    const loadReads = async () => {
+      const { data } = await supabase
+        .from('user_reads')
+        .select('last_read_at')
+        .eq('username', username)
+        .maybeSingle();
+
+      if (data?.last_read_at && isMounted) {
+        setLastReadAt(data.last_read_at);
+      }
+    };
+
+    loadMessages();
+    loadReads();
+
+    const channel = supabase
+      .channel('messages')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        (payload) => {
+          const incoming = payload.new;
+          if (!incoming) return;
+
+          setMessages((prev) => {
+            const exists = prev.find((item) => item.id === incoming.id);
+            let next;
+            if (exists) {
+              next = prev.map((item) => (item.id === incoming.id ? incoming : item));
+            } else {
+              next = [...prev, incoming];
+            }
+            return next.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(channel);
+    };
+  }, [isAuthed, username, isConfigured]);
+
+  useEffect(() => {
+    if (!isAuthed || !username || !isConfigured) return;
+
+    const presence = supabase.channel('presence', {
+      config: {
+        presence: { key: username }
+      }
+    });
+
+    presence.on('presence', { event: 'sync' }, () => {
+      const state = presence.presenceState();
+      const names = Object.keys(state).flatMap((key) =>
+        state[key].map((entry) => entry.username)
+      );
+      setOnlineUsers(Array.from(new Set(names)));
+    });
+
+    presence.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        presence.track({ username, online_at: new Date().toISOString() });
+      }
+    });
+
+    return () => {
+      supabase.removeChannel(presence);
+    };
+  }, [isAuthed, username, isConfigured]);
+
+  useEffect(() => {
+    if (!messages.length) {
+      setUnread(false);
+      return;
+    }
+    if (!lastReadAt) {
+      setUnread(true);
+      return;
+    }
+    const latest = messages[messages.length - 1];
+    const hasUnread = new Date(latest.created_at) > new Date(lastReadAt);
+    setUnread(hasUnread);
+  }, [messages, lastReadAt]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const baseTitle = 'Private Texting';
+    document.title = unread ? `${baseTitle} 🟢` : baseTitle;
+  }, [unread]);
+
+  const markRead = async (timestamp) => {
+    if (!username || !isConfigured) return;
+    const value = timestamp || new Date().toISOString();
+    setLastReadAt(value);
+    await supabase
+      .from('user_reads')
+      .upsert({ username, last_read_at: value }, { onConflict: 'username' });
+  };
+
+  const maybeMarkRead = () => {
+    const container = listRef.current;
+    if (!container || !messages.length) return;
+    const nearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+    if (nearBottom) {
+      const latest = messages[messages.length - 1];
+      if (latest) {
+        markRead(latest.created_at);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!isAuthed) return;
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        maybeMarkRead();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [isAuthed, messages]);
+
+  useEffect(() => {
+    if (!messages.length) return;
+    if (stickToBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+    maybeMarkRead();
+  }, [messages]);
+
+  const handleScroll = () => {
+    const container = listRef.current;
+    if (!container) return;
+    const nearBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+    stickToBottomRef.current = nearBottom;
+    if (nearBottom) {
+      const latest = messages[messages.length - 1];
+      if (latest) {
+        markRead(latest.created_at);
+      }
+    }
+  };
+
+  const handleAuth = (event) => {
+    event.preventDefault();
+    const sharedPassword = process.env.NEXT_PUBLIC_CHAT_PASSWORD || '';
+
+    if (passwordInput.trim() !== sharedPassword) {
+      setAuthError('Incorrect password.');
+      return;
+    }
+
+    const candidate = username || usernameInput.trim();
+    if (!candidate) {
+      setAuthError('Choose a username to continue.');
+      return;
+    }
+
+    if (!username) {
+      window.localStorage.setItem('chat_username', candidate);
+      setUsername(candidate);
+    }
+
+    setAuthError('');
+    setIsAuthed(true);
+    setPasswordInput('');
+  };
+
+  const handleSend = async () => {
+    if (sending || !isConfigured) return;
+
+    if (editingId) {
+      const trimmed = editingText.trim();
+      if (!trimmed) return;
+      setSending(true);
+      const { data } = await supabase
+        .from('messages')
+        .update({ content: trimmed, edited_at: new Date().toISOString() })
+        .eq('id', editingId)
+        .select('*')
+        .single();
+      if (data) {
+        setMessages((prev) =>
+          prev.map((item) => (item.id === editingId ? data : item))
+        );
+      }
+      setEditingId(null);
+      setEditingText('');
+      setSending(false);
+      return;
+    }
+
+    const trimmed = newMessage.trim();
+    if (!trimmed) return;
+
+    setSending(true);
+    const { data } = await supabase
+      .from('messages')
+      .insert({
+        content: trimmed,
+        user_name: username,
+        reply_to: replyTo?.id || null
+      })
+      .select('*')
+      .single();
+
+    if (data) {
+      setMessages((prev) =>
+        [...prev, data].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+      );
+    }
+
+    setNewMessage('');
+    setReplyTo(null);
+    setSending(false);
+    markRead(new Date().toISOString());
+  };
+
+  const handleKeyDown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      handleSend();
+    }
+  };
+
+  const startReply = (message) => {
+    setReplyTo(message);
+    setEditingId(null);
+    setEditingText('');
+  };
+
+  const startEdit = (message) => {
+    setEditingId(message.id);
+    setEditingText(message.content || '');
+    setReplyTo(null);
+  };
+
+  const cancelContext = () => {
+    setReplyTo(null);
+    setEditingId(null);
+    setEditingText('');
+  };
+
+  const handleDelete = async (messageId) => {
+    const deleted = {
+      deleted_at: new Date().toISOString(),
+      content: null,
+      reactions: {}
+    };
+    await supabase
+      .from('messages')
+      .update(deleted)
+      .eq('id', messageId);
+    setMessages((prev) =>
+      prev.map((item) => (item.id === messageId ? { ...item, ...deleted } : item))
+    );
+  };
+
+  const toggleReaction = async (messageId, emoji) => {
+    const message = messageMap[messageId];
+    if (!message) return;
+
+    const nextReactions = { ...(message.reactions || {}) };
+    const currentUsers = Array.isArray(nextReactions[emoji])
+      ? nextReactions[emoji]
+      : [];
+    const hasReacted = currentUsers.includes(username);
+    let updatedUsers;
+
+    if (hasReacted) {
+      updatedUsers = currentUsers.filter((user) => user !== username);
+    } else {
+      updatedUsers = [...currentUsers, username];
+    }
+
+    if (updatedUsers.length === 0) {
+      delete nextReactions[emoji];
+    } else {
+      nextReactions[emoji] = updatedUsers;
+    }
+
+    setMessages((prev) =>
+      prev.map((item) =>
+        item.id === messageId ? { ...item, reactions: nextReactions } : item
+      )
+    );
+
+    await supabase.from('messages').update({ reactions: nextReactions }).eq('id', messageId);
+  };
+
+  const promptCustomReaction = (messageId) => {
+    const emoji = window.prompt('Type or paste an emoji');
+    if (!emoji) return;
+    toggleReaction(messageId, emoji.trim());
+  };
+
+  const handleSwipeStart = (message, event) => {
+    swipeMetaRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      active: false,
+      isOwn: message.user_name === username
+    };
+    setSwipeMessageId(message.id);
+    setSwipeOffset(0);
+    setIsSwiping(false);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const handleSwipeMove = (message, event) => {
+    if (swipeMessageId !== message.id) return;
+    const meta = swipeMetaRef.current;
+    const deltaX = event.clientX - meta.startX;
+    const deltaY = event.clientY - meta.startY;
+
+    if (!meta.active) {
+      if (Math.abs(deltaX) > 6 && Math.abs(deltaX) > Math.abs(deltaY)) {
+        meta.active = true;
+        setIsSwiping(true);
+      } else if (Math.abs(deltaY) > 6 && Math.abs(deltaY) > Math.abs(deltaX)) {
+        setIsSwiping(false);
+        setSwipeMessageId(null);
+        setSwipeOffset(0);
+        return;
+      }
+    }
+
+    if (!meta.active) return;
+    event.preventDefault();
+    const clamped = meta.isOwn
+      ? Math.max(0, Math.min(90, deltaX))
+      : Math.max(-90, Math.min(0, deltaX));
+    setSwipeOffset(clamped);
+  };
+
+  const handleSwipeEnd = (message, event) => {
+    if (swipeMessageId !== message.id) return;
+    const meta = swipeMetaRef.current;
+    const deltaX = event.clientX - meta.startX;
+    if (meta.active) {
+      const isOwn = meta.isOwn;
+      if ((isOwn && deltaX > 60) || (!isOwn && deltaX < -60)) {
+        startReply(message);
+      }
+    }
+    setIsSwiping(false);
+    setSwipeOffset(0);
+    window.setTimeout(() => {
+      setSwipeMessageId(null);
+    }, 160);
+  };
+
+  const triggerSwipePulse = (message, direction) => {
+    setSwipePulse({ id: message.id, direction });
+    if (swipePulseRef.current) {
+      window.clearTimeout(swipePulseRef.current);
+    }
+    swipePulseRef.current = window.setTimeout(() => {
+      setSwipePulse(null);
+    }, 240);
+  };
+
+  const handleWheelSwipe = (message, event) => {
+    if (editingId) return;
+    if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+    if (Math.abs(event.deltaX) < 20) return;
+    event.preventDefault();
+
+    const isOwn = message.user_name === username;
+    const direction = event.deltaX > 0 ? 'right' : 'left';
+    if ((isOwn && direction === 'right') || (!isOwn && direction === 'left')) {
+      startReply(message);
+      triggerSwipePulse(message, direction);
+    }
+  };
+
+  if (!isConfigured) {
+    return (
+      <main className="app-shell">
+        <div className="auth-card">
+          <h1 className="auth-title">Private Texting</h1>
+          <p className="auth-subtitle">
+            Add your Supabase credentials and shared password to continue.
+          </p>
+          {configError && <div className="error-text">{configError}</div>}
+        </div>
+      </main>
+    );
+  }
+
+  if (!isAuthed) {
+    return (
+      <main className="app-shell">
+        <form className="auth-card" onSubmit={handleAuth}>
+          <div>
+            <h1 className="auth-title">Private Line</h1>
+            <p className="auth-subtitle">
+              Enter the shared password. Your name stays on this device.
+            </p>
+          </div>
+          {!username && (
+            <div className="auth-field">
+              <label htmlFor="username">Username</label>
+              <input
+                id="username"
+                value={usernameInput}
+                onChange={(event) => setUsernameInput(event.target.value)}
+                placeholder="Choose a name"
+                maxLength={30}
+                autoComplete="off"
+              />
+            </div>
+          )}
+          <div className="auth-field">
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
+              type="password"
+              value={passwordInput}
+              onChange={(event) => setPasswordInput(event.target.value)}
+              placeholder="Shared password"
+              autoComplete="off"
+            />
+          </div>
+          {authError && <div className="error-text">{authError}</div>}
+          <div className="auth-actions">
+            <button className="primary-btn" type="submit">
+              Enter chat
+            </button>
+            {username && (
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => {
+                  window.localStorage.removeItem('chat_username');
+                  setUsername('');
+                }}
+              >
+                Use a different name
+              </button>
+            )}
+          </div>
+        </form>
+      </main>
+    );
+  }
+
+  const composerValue = editingId ? editingText : newMessage;
+  const hasContext = Boolean(replyTo || editingId);
+  const presenceUsers = onlineUsers.length ? onlineUsers : [];
+
+  return (
+    <main className="app-shell">
+      <div className="chat-shell">
+        <header className="chat-header">
+          <div className="header-title">
+            <span>Private Line</span>
+            <span>Two-person chat</span>
+          </div>
+          <div className="header-meta">
+            {unread && (
+              <span className="unread-indicator">
+                Unread <span className="unread-dot" />
+              </span>
+            )}
+            <div className="presence-list">
+              {presenceUsers.length === 0 && <span>Waiting for friend</span>}
+              {presenceUsers.map((name) => (
+                <span className="presence-item" key={name}>
+                  <span className="presence-dot online" />
+                  {name === username ? `${name} (you)` : name}
+                </span>
+              ))}
+            </div>
+          </div>
+        </header>
+
+        <section className="chat-body">
+          <div className="message-list" ref={listRef} onScroll={handleScroll}>
+            {loadingMessages && <div className="empty-state">Loading messages...</div>}
+            {!loadingMessages && messages.length === 0 && (
+              <div className="empty-state">Start the first message.</div>
+            )}
+
+            {messages.map((message, index) => {
+              const previous = messages[index - 1];
+              const isGrouped =
+                previous &&
+                previous.user_name === message.user_name &&
+                new Date(message.created_at) - new Date(previous.created_at) < GROUP_WINDOW_MS;
+              const isOwn = message.user_name === username;
+              const replyMessage = message.reply_to ? messageMap[message.reply_to] : null;
+              const isDeleted = Boolean(message.deleted_at);
+              const reactions = message.reactions || {};
+
+              return (
+                <div
+                  key={message.id}
+                  className={`message-item ${isOwn ? 'own' : ''} ${
+                    isGrouped ? 'grouped' : ''
+                  }`}
+                >
+                  {!isGrouped && (
+                    <div className="message-meta">
+                      <span>{message.user_name}</span>
+                      <span>{formatTime(message.created_at)}</span>
+                      {message.edited_at && <span>(edited)</span>}
+                    </div>
+                  )}
+
+                  <div
+                    className={`message-content ${isOwn ? 'own' : ''}`}
+                  >
+                    <div
+                      className={`message-bubble ${isDeleted ? 'deleted' : ''} ${
+                        isSwiping && swipeMessageId === message.id ? 'swipe-dragging' : ''
+                      } ${
+                        swipePulse?.id === message.id
+                          ? swipePulse.direction === 'right'
+                            ? 'swipe-pulse-right'
+                            : 'swipe-pulse-left'
+                          : ''
+                      }`}
+                      style={
+                        swipeMessageId === message.id
+                          ? { transform: `translateX(${swipeOffset}px)` }
+                          : undefined
+                      }
+                      onPointerDown={(event) => handleSwipeStart(message, event)}
+                      onPointerMove={(event) => handleSwipeMove(message, event)}
+                      onPointerUp={(event) => handleSwipeEnd(message, event)}
+                      onPointerCancel={(event) => handleSwipeEnd(message, event)}
+                      onWheel={(event) => handleWheelSwipe(message, event)}
+                    >
+                      {replyMessage && (
+                        <div className="reply-preview">
+                          Replying to {replyMessage.user_name}:{' '}
+                          {replyMessage.content || 'Deleted message'}
+                        </div>
+                      )}
+                      {isDeleted ? 'Message deleted' : message.content}
+                    </div>
+
+                    {!isDeleted && (
+                      <div className="message-actions">
+                        <button
+                          className="action-btn"
+                          type="button"
+                          onClick={() => startReply(message)}
+                        >
+                          Reply
+                        </button>
+                        <button
+                          className="action-btn"
+                          type="button"
+                          onClick={() =>
+                            setReactionTarget((current) =>
+                              current === message.id ? null : message.id
+                            )
+                          }
+                        >
+                          React
+                        </button>
+                        {isOwn && (
+                          <>
+                            <button
+                              className="action-btn"
+                              type="button"
+                              onClick={() => startEdit(message)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="action-btn"
+                              type="button"
+                              onClick={() => handleDelete(message.id)}
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {reactionTarget === message.id && (
+                      <div className="reaction-picker">
+                        {EMOJIS.map((emoji) => (
+                          <button
+                            type="button"
+                            key={emoji}
+                            onClick={() => toggleReaction(message.id, emoji)}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="emoji-plus"
+                          onClick={() => promptCustomReaction(message.id)}
+                          aria-label="More emojis"
+                        >
+                          +
+                        </button>
+                      </div>
+                    )}
+
+                    {Object.keys(reactions).length > 0 && (
+                      <div className="reaction-row">
+                        {Object.entries(reactions).map(([emoji, users]) => (
+                          <button
+                            key={emoji}
+                            className={`reaction-chip ${
+                              Array.isArray(users) && users.includes(username) ? 'selected' : ''
+                            }`}
+                            type="button"
+                            onClick={() => toggleReaction(message.id, emoji)}
+                          >
+                            <span>{emoji}</span>
+                            <span>{Array.isArray(users) ? users.length : 0}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            <div ref={bottomRef} />
+          </div>
+
+          <div className="composer">
+            {hasContext && (
+              <div className="composer-context">
+                {replyTo && (
+                  <span>
+                    Replying to {replyTo.user_name}: {replyTo.content || 'Deleted message'}
+                  </span>
+                )}
+                {editingId && <span>Editing message</span>}
+                <button className="secondary-btn" type="button" onClick={cancelContext}>
+                  Cancel
+                </button>
+              </div>
+            )}
+            <form
+              className="composer-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                handleSend();
+              }}
+            >
+              <textarea
+                value={composerValue}
+                onChange={(event) =>
+                  editingId
+                    ? setEditingText(event.target.value)
+                    : setNewMessage(event.target.value)
+                }
+                placeholder="Write a message..."
+                onKeyDown={handleKeyDown}
+              />
+              <button className="primary-btn" type="submit" disabled={sending}>
+                {editingId ? 'Save' : 'Send'}
+              </button>
+            </form>
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
