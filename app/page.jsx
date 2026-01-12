@@ -13,6 +13,45 @@ const formatTime = (value) => {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
+const updateFavicon = (showDot) => {
+  if (typeof document === 'undefined') return;
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  ctx.fillStyle = '#fff6fb';
+  ctx.fillRect(0, 0, size, size);
+
+  ctx.fillStyle = '#ff6fa3';
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, 26, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#fff6fb';
+  ctx.font = '28px "Space Grotesk", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('N', size / 2, size / 2 + 2);
+
+  if (showDot) {
+    ctx.fillStyle = '#ff3b6b';
+    ctx.beginPath();
+    ctx.arc(48, 16, 7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  let link = document.querySelector("link[rel~='icon']");
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+  link.href = canvas.toDataURL('image/png');
+};
+
 export default function Home() {
   const [username, setUsername] = useState('');
   const [usernameInput, setUsernameInput] = useState('');
@@ -221,7 +260,8 @@ export default function Home() {
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const baseTitle = 'Neniboo Chat';
-    document.title = unread ? `${baseTitle} 🟢` : baseTitle;
+    document.title = unread ? `● ${baseTitle}` : baseTitle;
+    updateFavicon(unread);
   }, [unread]);
 
   const markRead = async (timestamp) => {
