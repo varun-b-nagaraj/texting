@@ -57,8 +57,7 @@ body::before {
   pointer-events: none;
   overflow: hidden;
   z-index: 0;
-  --chat-width: min(980px, calc(100vw - 32px));
-  --gutter: max(0px, calc((100vw - var(--chat-width)) / 2));
+  --gutter: max(0px, calc((100vw - 500px) / 2));
 }
 
 .heart-lane {
@@ -83,10 +82,10 @@ body::before {
   top: -12vh;
   font-size: var(--size);
   opacity: var(--opacity);
-  color: var(--accent);
+  color: var(--accent-deep);
   animation: heartFall var(--duration) linear forwards;
   transform: translateX(0);
-  text-shadow: 0 6px 14px rgba(255, 111, 163, 0.25);
+  text-shadow: 0 8px 18px rgba(255, 111, 163, 0.35);
   white-space: nowrap;
 }
 
@@ -94,8 +93,8 @@ body::before {
   font-family: var(--font-serif);
   font-size: calc(var(--size) * 0.7);
   color: var(--black);
-  background: rgba(255, 214, 228, 0.8);
-  border: 1px solid rgba(255, 111, 163, 0.4);
+  background: rgba(255, 214, 228, 0.9);
+  border: 1px solid rgba(255, 111, 163, 0.55);
   padding: 6px 10px;
   border-radius: 8px;
   text-transform: lowercase;
@@ -103,7 +102,13 @@ body::before {
 
 .heart-item.bubble {
   color: var(--accent-deep);
-  text-shadow: 0 10px 22px rgba(255, 111, 163, 0.35);
+  text-shadow: 0 10px 24px rgba(255, 111, 163, 0.45);
+}
+
+@media (max-width: 500px) {
+  .hearts-overlay {
+    display: none;
+  }
 }
 
 main {
