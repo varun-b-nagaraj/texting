@@ -38,11 +38,11 @@ export default function HeartsOverlay() {
       const text = isPhrase
         ? phrases[Math.floor(Math.random() * phrases.length)]
         : heartGlyphs[Math.floor(Math.random() * heartGlyphs.length)];
-      const size = isBubble ? randomBetween(32, 50) : randomBetween(16, 26);
+      const size = isBubble ? randomBetween(34, 56) : randomBetween(18, 30);
       const duration = isBubble ? randomBetween(9, 13) : randomBetween(6, 10);
       const drift = randomBetween(-30, 30);
       const left = randomBetween(4, 96);
-      const opacity = isBubble ? 0.55 : randomBetween(0.45, 0.85);
+      const opacity = isBubble ? 0.7 : randomBetween(0.6, 0.95);
       const lane = Math.random() < 0.5 ? 'left' : 'right';
       const id = crypto.randomUUID();
 

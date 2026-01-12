@@ -691,7 +691,7 @@ export default function Home() {
         <header className="chat-header">
           <div className="header-title">
             <span>Neniboo Chat</span>
-            <span>Just us, always</span>
+            <span>If no one told u today, i think u so cute muah!!</span>
           </div>
           <div className="header-meta">
             {unread && (
