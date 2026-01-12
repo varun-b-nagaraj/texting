@@ -21,6 +21,8 @@ const updateFavicon = (showUnread) => {
     link.rel = 'icon';
     document.head.appendChild(link);
   }
+  link.type = 'image/png';
+  link.sizes = 'any';
   link.href = showUnread ? '/favicon2.png' : '/favicon1.png';
 };
 

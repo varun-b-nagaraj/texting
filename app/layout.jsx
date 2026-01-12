@@ -15,7 +15,10 @@ const instrumentSerif = Instrument_Serif({
 
 export const metadata = {
   title: 'Neniboo Chat',
-  description: 'for the best gf in the world <3333.'
+  description: 'for the best gf in the world <3333.',
+  icons: {
+    icon: '/favicon1.png'
+  }
 };
 
 export default function RootLayout({ children }) {
