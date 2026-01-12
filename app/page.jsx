@@ -13,43 +13,15 @@ const formatTime = (value) => {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-const updateFavicon = (showDot) => {
+const updateFavicon = (showUnread) => {
   if (typeof document === 'undefined') return;
-  const size = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-
-  ctx.fillStyle = '#fff6fb';
-  ctx.fillRect(0, 0, size, size);
-
-  ctx.fillStyle = '#ff6fa3';
-  ctx.beginPath();
-  ctx.arc(size / 2, size / 2, 26, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = '#fff6fb';
-  ctx.font = '28px "Space Grotesk", sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('N', size / 2, size / 2 + 2);
-
-  if (showDot) {
-    ctx.fillStyle = '#ff3b6b';
-    ctx.beginPath();
-    ctx.arc(48, 16, 7, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
   let link = document.querySelector("link[rel~='icon']");
   if (!link) {
     link = document.createElement('link');
     link.rel = 'icon';
     document.head.appendChild(link);
   }
-  link.href = canvas.toDataURL('image/png');
+  link.href = showUnread ? '/favicon2.png' : '/favicon1.png';
 };
 
 export default function Home() {
@@ -88,6 +60,14 @@ export default function Home() {
   const typingTimeoutRef = useRef(null);
   const [isTyping, setIsTyping] = useState(false);
   const lastMessageRef = useRef(null);
+  const forceScrollRef = useRef(false);
+
+  const isNearBottom = (container, threshold = 160) =>
+    container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+
+  const scrollToBottom = (behavior = 'auto') => {
+    bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
+  };
 
   const isConfigured = Boolean(
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -260,7 +240,7 @@ export default function Home() {
   useEffect(() => {
     if (typeof document === 'undefined') return;
     const baseTitle = 'Neniboo Chat';
-    document.title = unread ? `● ${baseTitle}` : baseTitle;
+    document.title = baseTitle;
     updateFavicon(unread);
   }, [unread]);
 
@@ -275,17 +255,19 @@ export default function Home() {
 
   useEffect(() => {
     if (!messages.length) return;
-    if (stickToBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const latest = messages[messages.length - 1];
+    const shouldScroll = forceScrollRef.current || stickToBottomRef.current;
+    if (shouldScroll) {
+      scrollToBottom(latest?.user_name === username ? 'smooth' : 'auto');
+      stickToBottomRef.current = true;
     }
-  }, [messages]);
+    forceScrollRef.current = false;
+  }, [messages.length, username]);
 
   const handleScroll = () => {
     const container = listRef.current;
     if (!container) return;
-    const nearBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight < 80;
-    stickToBottomRef.current = nearBottom;
+    stickToBottomRef.current = isNearBottom(container);
   };
 
   const handleAuth = (event) => {
@@ -367,6 +349,8 @@ export default function Home() {
 
   const handleSend = async () => {
     if (sending || !isConfigured) return;
+    forceScrollRef.current = true;
+    stickToBottomRef.current = true;
 
     if (editingId) {
       const trimmed = editingText.trim();
