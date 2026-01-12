@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabaseClient';
 
 const EMOJIS = ['❤️', '😂', '👍', '😮', '😢', '😡'];
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
+const UPLOAD_BUCKET = 'chat-uploads';
 
 const formatTime = (value) => {
   if (!value) return '';
@@ -28,9 +29,12 @@ export default function Home() {
   const [editingText, setEditingText] = useState('');
   const [reactionTarget, setReactionTarget] = useState(null);
   const [onlineUsers, setOnlineUsers] = useState([]);
+  const [typingUsers, setTypingUsers] = useState([]);
   const [lastReadAt, setLastReadAt] = useState(null);
   const [unread, setUnread] = useState(false);
   const [sending, setSending] = useState(false);
+  const [pendingImages, setPendingImages] = useState([]);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [swipeMessageId, setSwipeMessageId] = useState(null);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
@@ -41,6 +45,10 @@ export default function Home() {
   const stickToBottomRef = useRef(true);
   const swipeMetaRef = useRef({ startX: 0, startY: 0, active: false, isOwn: false });
   const swipePulseRef = useRef(null);
+  const presenceRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const lastMessageRef = useRef(null);
 
   const isConfigured = Boolean(
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
@@ -144,22 +152,36 @@ export default function Home() {
         presence: { key: username }
       }
     });
+    presenceRef.current = presence;
 
     presence.on('presence', { event: 'sync' }, () => {
       const state = presence.presenceState();
-      const names = Object.keys(state).flatMap((key) =>
-        state[key].map((entry) => entry.username)
-      );
+      const names = [];
+      const typing = [];
+      Object.keys(state).forEach((key) => {
+        state[key].forEach((entry) => {
+          if (entry.username) {
+            names.push(entry.username);
+          }
+          if (entry.typing) {
+            typing.push(entry.username);
+          }
+        });
+      });
       setOnlineUsers(Array.from(new Set(names)));
+      setTypingUsers(
+        Array.from(new Set(typing)).filter((name) => name && name !== username)
+      );
     });
 
     presence.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
-        presence.track({ username, online_at: new Date().toISOString() });
+        presence.track({ username, typing: false, online_at: new Date().toISOString() });
       }
     });
 
     return () => {
+      presenceRef.current = null;
       supabase.removeChannel(presence);
     };
   }, [isAuthed, username, isConfigured]);
@@ -179,8 +201,26 @@ export default function Home() {
   }, [messages, lastReadAt]);
 
   useEffect(() => {
+    if (!listRef.current || !lastMessageRef.current) return;
+    const latest = messages[messages.length - 1];
+    if (!latest) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            markRead(latest.created_at);
+          }
+        });
+      },
+      { root: listRef.current, threshold: 0.6 }
+    );
+    observer.observe(lastMessageRef.current);
+    return () => observer.disconnect();
+  }, [messages]);
+
+  useEffect(() => {
     if (typeof document === 'undefined') return;
-    const baseTitle = 'Private Texting';
+    const baseTitle = 'Neniboo Chat';
     document.title = unread ? `${baseTitle} 🟢` : baseTitle;
   }, [unread]);
 
@@ -193,38 +233,11 @@ export default function Home() {
       .upsert({ username, last_read_at: value }, { onConflict: 'username' });
   };
 
-  const maybeMarkRead = () => {
-    const container = listRef.current;
-    if (!container || !messages.length) return;
-    const nearBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight < 80;
-    if (nearBottom) {
-      const latest = messages[messages.length - 1];
-      if (latest) {
-        markRead(latest.created_at);
-      }
-    }
-  };
-
-  useEffect(() => {
-    if (!isAuthed) return;
-
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        maybeMarkRead();
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => document.removeEventListener('visibilitychange', handleVisibility);
-  }, [isAuthed, messages]);
-
   useEffect(() => {
     if (!messages.length) return;
     if (stickToBottomRef.current) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-    maybeMarkRead();
   }, [messages]);
 
   const handleScroll = () => {
@@ -233,12 +246,6 @@ export default function Home() {
     const nearBottom =
       container.scrollHeight - container.scrollTop - container.clientHeight < 80;
     stickToBottomRef.current = nearBottom;
-    if (nearBottom) {
-      const latest = messages[messages.length - 1];
-      if (latest) {
-        markRead(latest.created_at);
-      }
-    }
   };
 
   const handleAuth = (event) => {
@@ -266,6 +273,58 @@ export default function Home() {
     setPasswordInput('');
   };
 
+  const addPendingImages = (files) => {
+    if (!files || files.length === 0 || editingId) return;
+    const next = Array.from(files)
+      .filter((file) => file.type.startsWith('image/'))
+      .map((file) => ({
+        id: crypto.randomUUID(),
+        file,
+        previewUrl: URL.createObjectURL(file)
+      }));
+    if (next.length === 0) return;
+    setPendingImages((prev) => [...prev, ...next]);
+  };
+
+  const removePendingImage = (imageId) => {
+    setPendingImages((prev) => {
+      const target = prev.find((item) => item.id === imageId);
+      if (target?.previewUrl) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return prev.filter((item) => item.id !== imageId);
+    });
+  };
+
+  const clearPendingImages = () => {
+    setPendingImages((prev) => {
+      prev.forEach((item) => {
+        if (item.previewUrl) {
+          URL.revokeObjectURL(item.previewUrl);
+        }
+      });
+      return [];
+    });
+  };
+
+  const handleDragOver = (event) => {
+    if (editingId) return;
+    event.preventDefault();
+    setIsDraggingFiles(true);
+  };
+
+  const handleDragLeave = (event) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return;
+    setIsDraggingFiles(false);
+  };
+
+  const handleDrop = (event) => {
+    if (editingId) return;
+    event.preventDefault();
+    setIsDraggingFiles(false);
+    addPendingImages(event.dataTransfer.files);
+  };
+
   const handleSend = async () => {
     if (sending || !isConfigured) return;
 
@@ -291,15 +350,49 @@ export default function Home() {
     }
 
     const trimmed = newMessage.trim();
-    if (!trimmed) return;
+    if (!trimmed && pendingImages.length === 0) return;
 
     setSending(true);
+    const messageId = crypto.randomUUID();
+    const attachments = [];
+
+    if (pendingImages.length > 0) {
+      for (const item of pendingImages) {
+        const safeName = item.file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `${messageId}/${Date.now()}-${safeName}`;
+        const { error } = await supabase.storage
+          .from(UPLOAD_BUCKET)
+          .upload(path, item.file);
+        if (error) {
+          console.error(error);
+          continue;
+        }
+        const { data: urlData } = supabase.storage
+          .from(UPLOAD_BUCKET)
+          .getPublicUrl(path);
+        attachments.push({
+          name: item.file.name,
+          type: item.file.type,
+          size: item.file.size,
+          url: urlData.publicUrl,
+          path
+        });
+      }
+    }
+
+    if (!trimmed && attachments.length === 0) {
+      setSending(false);
+      return;
+    }
+
     const { data } = await supabase
       .from('messages')
       .insert({
-        content: trimmed,
+        id: messageId,
+        content: trimmed || null,
         user_name: username,
-        reply_to: replyTo?.id || null
+        reply_to: replyTo?.id || null,
+        attachments
       })
       .select('*')
       .single();
@@ -312,8 +405,13 @@ export default function Home() {
 
     setNewMessage('');
     setReplyTo(null);
+    clearPendingImages();
     setSending(false);
     markRead(new Date().toISOString());
+    if (presenceRef.current && isTyping) {
+      setIsTyping(false);
+      presenceRef.current.track({ username, typing: false, online_at: new Date().toISOString() });
+    }
   };
 
   const handleKeyDown = (event) => {
@@ -321,6 +419,41 @@ export default function Home() {
       event.preventDefault();
       handleSend();
     }
+  };
+
+  const updateTyping = (value) => {
+    if (!presenceRef.current || !username) return;
+    const hasText = value.trim().length > 0;
+    if (!hasText) {
+      if (isTyping) {
+        setIsTyping(false);
+        presenceRef.current.track({
+          username,
+          typing: false,
+          online_at: new Date().toISOString()
+        });
+      }
+      return;
+    }
+    if (!isTyping) {
+      setIsTyping(true);
+      presenceRef.current.track({
+        username,
+        typing: true,
+        online_at: new Date().toISOString()
+      });
+    }
+    if (typingTimeoutRef.current) {
+      window.clearTimeout(typingTimeoutRef.current);
+    }
+    typingTimeoutRef.current = window.setTimeout(() => {
+      setIsTyping(false);
+      presenceRef.current?.track({
+        username,
+        typing: false,
+        online_at: new Date().toISOString()
+      });
+    }, 1400);
   };
 
   const startReply = (message) => {
@@ -333,19 +466,22 @@ export default function Home() {
     setEditingId(message.id);
     setEditingText(message.content || '');
     setReplyTo(null);
+    clearPendingImages();
   };
 
   const cancelContext = () => {
     setReplyTo(null);
     setEditingId(null);
     setEditingText('');
+    updateTyping('');
   };
 
   const handleDelete = async (messageId) => {
     const deleted = {
       deleted_at: new Date().toISOString(),
       content: null,
-      reactions: {}
+      reactions: {},
+      attachments: []
     };
     await supabase
       .from('messages')
@@ -478,7 +614,7 @@ export default function Home() {
     return (
       <main className="app-shell">
         <div className="auth-card">
-          <h1 className="auth-title">Private Texting</h1>
+          <h1 className="auth-title">Neniboo Chat</h1>
           <p className="auth-subtitle">
             Add your Supabase credentials and shared password to continue.
           </p>
@@ -493,9 +629,9 @@ export default function Home() {
       <main className="app-shell">
         <form className="auth-card" onSubmit={handleAuth}>
           <div>
-            <h1 className="auth-title">Private Line</h1>
+            <h1 className="auth-title">Neniboo Chat</h1>
             <p className="auth-subtitle">
-              Enter the shared password. Your name stays on this device.
+              Enter the shared password. Sweet little space for us.
             </p>
           </div>
           {!username && (
@@ -554,8 +690,8 @@ export default function Home() {
       <div className="chat-shell">
         <header className="chat-header">
           <div className="header-title">
-            <span>Private Line</span>
-            <span>Two-person chat</span>
+            <span>Neniboo Chat</span>
+            <span>Just us, always</span>
           </div>
           <div className="header-meta">
             {unread && (
@@ -563,183 +699,244 @@ export default function Home() {
                 Unread <span className="unread-dot" />
               </span>
             )}
-            <div className="presence-list">
-              {presenceUsers.length === 0 && <span>Waiting for friend</span>}
-              {presenceUsers.map((name) => (
-                <span className="presence-item" key={name}>
-                  <span className="presence-dot online" />
-                  {name === username ? `${name} (you)` : name}
-                </span>
-              ))}
-            </div>
           </div>
         </header>
 
         <section className="chat-body">
-          <div className="message-list" ref={listRef} onScroll={handleScroll}>
-            {loadingMessages && <div className="empty-state">Loading messages...</div>}
-            {!loadingMessages && messages.length === 0 && (
-              <div className="empty-state">Start the first message.</div>
-            )}
+          <div className="chat-content">
+            <aside className="presence-panel">
+              <div className="presence-title">Online</div>
+              <div className="presence-list">
+                {presenceUsers.length === 0 && <span>Waiting for friend</span>}
+                {presenceUsers.map((name) => (
+                  <span className="presence-item" key={name}>
+                    <span className="presence-dot online" />
+                    {name === username ? `${name} (you)` : name}
+                    {typingUsers.includes(name) && (
+                      <span className="typing-dots" aria-label="Typing">
+                        <span />
+                        <span />
+                        <span />
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </div>
+            </aside>
+            <div className="message-pane">
+              <div className="message-list" ref={listRef} onScroll={handleScroll}>
+                {loadingMessages && <div className="empty-state">Loading messages...</div>}
+                {!loadingMessages && messages.length === 0 && (
+                  <div className="empty-state">Start the first message.</div>
+                )}
 
-            {messages.map((message, index) => {
-              const previous = messages[index - 1];
-              const isGrouped =
+                {messages.map((message, index) => {
+                  const previous = messages[index - 1];
+                  const isGrouped =
                 previous &&
                 previous.user_name === message.user_name &&
-                new Date(message.created_at) - new Date(previous.created_at) < GROUP_WINDOW_MS;
+                new Date(message.created_at) - new Date(previous.created_at) <
+                  GROUP_WINDOW_MS;
               const isOwn = message.user_name === username;
+              const isLast = index === messages.length - 1;
               const replyMessage = message.reply_to ? messageMap[message.reply_to] : null;
               const isDeleted = Boolean(message.deleted_at);
               const reactions = message.reactions || {};
+              const attachments = Array.isArray(message.attachments)
+                ? message.attachments
+                : [];
 
-              return (
+                  return (
                 <div
                   key={message.id}
                   className={`message-item ${isOwn ? 'own' : ''} ${
                     isGrouped ? 'grouped' : ''
                   }`}
+                  ref={isLast ? lastMessageRef : null}
                 >
-                  {!isGrouped && (
-                    <div className="message-meta">
-                      <span>{message.user_name}</span>
-                      <span>{formatTime(message.created_at)}</span>
-                      {message.edited_at && <span>(edited)</span>}
-                    </div>
-                  )}
-
-                  <div
-                    className={`message-content ${isOwn ? 'own' : ''}`}
-                  >
-                    <div
-                      className={`message-bubble ${isDeleted ? 'deleted' : ''} ${
-                        isSwiping && swipeMessageId === message.id ? 'swipe-dragging' : ''
-                      } ${
-                        swipePulse?.id === message.id
-                          ? swipePulse.direction === 'right'
-                            ? 'swipe-pulse-right'
-                            : 'swipe-pulse-left'
-                          : ''
-                      }`}
-                      style={
-                        swipeMessageId === message.id
-                          ? { transform: `translateX(${swipeOffset}px)` }
-                          : undefined
-                      }
-                      onPointerDown={(event) => handleSwipeStart(message, event)}
-                      onPointerMove={(event) => handleSwipeMove(message, event)}
-                      onPointerUp={(event) => handleSwipeEnd(message, event)}
-                      onPointerCancel={(event) => handleSwipeEnd(message, event)}
-                      onWheel={(event) => handleWheelSwipe(message, event)}
-                    >
-                      {replyMessage && (
-                        <div className="reply-preview">
-                          Replying to {replyMessage.user_name}:{' '}
-                          {replyMessage.content || 'Deleted message'}
+                      {!isGrouped && (
+                        <div className="message-meta">
+                          <span>{message.user_name}</span>
+                          <span>{formatTime(message.created_at)}</span>
+                          {message.edited_at && <span>(edited)</span>}
                         </div>
                       )}
-                      {isDeleted ? 'Message deleted' : message.content}
-                    </div>
 
-                    {!isDeleted && (
-                      <div className="message-actions">
-                        <button
-                          className="action-btn"
-                          type="button"
-                          onClick={() => startReply(message)}
-                        >
-                          Reply
-                        </button>
-                        <button
-                          className="action-btn"
-                          type="button"
-                          onClick={() =>
-                            setReactionTarget((current) =>
-                              current === message.id ? null : message.id
-                            )
+                      <div className={`message-content ${isOwn ? 'own' : ''}`}>
+                        <div
+                          className={`message-bubble ${isDeleted ? 'deleted' : ''} ${
+                            isSwiping && swipeMessageId === message.id ? 'swipe-dragging' : ''
+                          } ${
+                            swipePulse?.id === message.id
+                              ? swipePulse.direction === 'right'
+                                ? 'swipe-pulse-right'
+                                : 'swipe-pulse-left'
+                              : ''
+                          }`}
+                          style={
+                            swipeMessageId === message.id
+                              ? { transform: `translateX(${swipeOffset}px)` }
+                              : undefined
                           }
+                          onPointerDown={(event) => handleSwipeStart(message, event)}
+                          onPointerMove={(event) => handleSwipeMove(message, event)}
+                          onPointerUp={(event) => handleSwipeEnd(message, event)}
+                          onPointerCancel={(event) => handleSwipeEnd(message, event)}
+                          onWheel={(event) => handleWheelSwipe(message, event)}
                         >
-                          React
-                        </button>
-                        {isOwn && (
-                          <>
+                          {replyMessage && (
+                            <div className="reply-preview">
+                              Replying to {replyMessage.user_name}:{' '}
+                              {replyMessage.content ||
+                                (Array.isArray(replyMessage.attachments) &&
+                                replyMessage.attachments.length > 0
+                                  ? 'Image'
+                                  : 'Deleted message')}
+                            </div>
+                          )}
+                          {isDeleted ? 'Message deleted' : message.content}
+                        </div>
+
+                        {!isDeleted && (
+                          <div className="message-actions">
                             <button
                               className="action-btn"
                               type="button"
-                              onClick={() => startEdit(message)}
+                              onClick={() => startReply(message)}
                             >
-                              Edit
+                              Reply
                             </button>
                             <button
                               className="action-btn"
                               type="button"
-                              onClick={() => handleDelete(message.id)}
+                              onClick={() =>
+                                setReactionTarget((current) =>
+                                  current === message.id ? null : message.id
+                                )
+                              }
                             >
-                              Delete
+                              React
                             </button>
-                          </>
+                            {isOwn && (
+                              <>
+                                <button
+                                  className="action-btn"
+                                  type="button"
+                                  onClick={() => startEdit(message)}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  className="action-btn"
+                                  type="button"
+                                  onClick={() => handleDelete(message.id)}
+                                >
+                                  Delete
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {!isDeleted && attachments.length > 0 && (
+                          <div className="attachment-row">
+                            {attachments.map((attachment) => (
+                              <a
+                                key={attachment.path || attachment.url}
+                                href={attachment.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="attachment-image"
+                              >
+                                <img src={attachment.url} alt={attachment.name} />
+                              </a>
+                            ))}
+                          </div>
+                        )}
+
+                        {reactionTarget === message.id && (
+                          <div className="reaction-picker">
+                            {EMOJIS.map((emoji) => (
+                              <button
+                                type="button"
+                                key={emoji}
+                                onClick={() => toggleReaction(message.id, emoji)}
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              className="emoji-plus"
+                              onClick={() => promptCustomReaction(message.id)}
+                              aria-label="More emojis"
+                            >
+                              +
+                            </button>
+                          </div>
+                        )}
+
+                        {Object.keys(reactions).length > 0 && (
+                          <div className="reaction-row">
+                            {Object.entries(reactions).map(([emoji, users]) => (
+                              <button
+                                key={emoji}
+                                className={`reaction-chip ${
+                                  Array.isArray(users) && users.includes(username)
+                                    ? 'selected'
+                                    : ''
+                                }`}
+                                type="button"
+                                onClick={() => toggleReaction(message.id, emoji)}
+                              >
+                                <span>{emoji}</span>
+                                <span>{Array.isArray(users) ? users.length : 0}</span>
+                              </button>
+                            ))}
+                          </div>
                         )}
                       </div>
-                    )}
-
-                    {reactionTarget === message.id && (
-                      <div className="reaction-picker">
-                        {EMOJIS.map((emoji) => (
-                          <button
-                            type="button"
-                            key={emoji}
-                            onClick={() => toggleReaction(message.id, emoji)}
-                          >
-                            {emoji}
-                          </button>
-                        ))}
-                        <button
-                          type="button"
-                          className="emoji-plus"
-                          onClick={() => promptCustomReaction(message.id)}
-                          aria-label="More emojis"
-                        >
-                          +
-                        </button>
-                      </div>
-                    )}
-
-                    {Object.keys(reactions).length > 0 && (
-                      <div className="reaction-row">
-                        {Object.entries(reactions).map(([emoji, users]) => (
-                          <button
-                            key={emoji}
-                            className={`reaction-chip ${
-                              Array.isArray(users) && users.includes(username) ? 'selected' : ''
-                            }`}
-                            type="button"
-                            onClick={() => toggleReaction(message.id, emoji)}
-                          >
-                            <span>{emoji}</span>
-                            <span>{Array.isArray(users) ? users.length : 0}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            <div ref={bottomRef} />
+                    </div>
+                  );
+                })}
+                <div ref={bottomRef} />
+              </div>
+            </div>
           </div>
 
-          <div className="composer">
+          <div
+            className={`composer ${isDraggingFiles ? 'dragging' : ''}`}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             {hasContext && (
               <div className="composer-context">
                 {replyTo && (
                   <span>
-                    Replying to {replyTo.user_name}: {replyTo.content || 'Deleted message'}
+                    Replying to {replyTo.user_name}:{' '}
+                    {replyTo.content ||
+                      (Array.isArray(replyTo.attachments) && replyTo.attachments.length > 0
+                        ? 'Image'
+                        : 'Deleted message')}
                   </span>
                 )}
                 {editingId && <span>Editing message</span>}
                 <button className="secondary-btn" type="button" onClick={cancelContext}>
                   Cancel
                 </button>
+              </div>
+            )}
+            {pendingImages.length > 0 && (
+              <div className="pending-attachments">
+                {pendingImages.map((item) => (
+                  <div className="pending-card" key={item.id}>
+                    <img src={item.previewUrl} alt={item.file.name} />
+                    <button type="button" onClick={() => removePendingImage(item.id)}>
+                      Remove
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
             <form
@@ -751,11 +948,15 @@ export default function Home() {
             >
               <textarea
                 value={composerValue}
-                onChange={(event) =>
-                  editingId
-                    ? setEditingText(event.target.value)
-                    : setNewMessage(event.target.value)
-                }
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (editingId) {
+                    setEditingText(value);
+                  } else {
+                    setNewMessage(value);
+                  }
+                  updateTyping(value);
+                }}
                 placeholder="Write a message..."
                 onKeyDown={handleKeyDown}
               />

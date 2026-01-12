@@ -1,4 +1,4 @@
-# Private Texting
+# Neniboo Chat
 
 A minimal two-person chat with a shared password, Supabase storage, realtime updates, reactions, replies, and presence.
 
