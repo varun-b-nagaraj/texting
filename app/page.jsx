@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
+const DEVICE_AUTH_KEY = 'chat_authed';
+const USERNAME_KEY = 'chat_username';
+const DEFAULT_HEADER_PHRASE = 'If no one told u today, i think u so cute muah!!';
+
 const EMOJIS = ['❤️', '😂', '👍', '😮', '😢', '😡'];
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
 const UPLOAD_BUCKET = 'chat-uploads';
@@ -31,8 +35,10 @@ export default function Home() {
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [isAuthed, setIsAuthed] = useState(false);
+  const [hasDeviceAuth, setHasDeviceAuth] = useState(false);
   const [authError, setAuthError] = useState('');
   const [configError, setConfigError] = useState('');
+  const [headerPhrase, setHeaderPhrase] = useState(DEFAULT_HEADER_PHRASE);
 
   const [messages, setMessages] = useState([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -87,10 +93,34 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const saved = window.localStorage.getItem('chat_username');
+    const saved = window.localStorage.getItem(USERNAME_KEY);
     if (saved) {
       setUsername(saved);
     }
+    const deviceAuth = window.localStorage.getItem(DEVICE_AUTH_KEY) === 'true';
+    if (deviceAuth) {
+      setHasDeviceAuth(true);
+      setIsAuthed(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/falling-phrases.json')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !Array.isArray(data)) return;
+        const phrases = data.filter(
+          (entry) => typeof entry === 'string' && entry.trim().length > 0
+        );
+        if (phrases.length === 0) return;
+        setHeaderPhrase(phrases[Math.floor(Math.random() * phrases.length)]);
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const messageMap = useMemo(() => {
@@ -276,9 +306,11 @@ export default function Home() {
     event.preventDefault();
     const sharedPassword = process.env.NEXT_PUBLIC_CHAT_PASSWORD || '';
 
-    if (passwordInput.trim() !== sharedPassword) {
-      setAuthError('Incorrect password.');
-      return;
+    if (!hasDeviceAuth) {
+      if (passwordInput.trim() !== sharedPassword) {
+        setAuthError('Incorrect password.');
+        return;
+      }
     }
 
     const candidate = username || usernameInput.trim();
@@ -288,10 +320,12 @@ export default function Home() {
     }
 
     if (!username) {
-      window.localStorage.setItem('chat_username', candidate);
+      window.localStorage.setItem(USERNAME_KEY, candidate);
       setUsername(candidate);
     }
 
+    window.localStorage.setItem(DEVICE_AUTH_KEY, 'true');
+    setHasDeviceAuth(true);
     setAuthError('');
     setIsAuthed(true);
     setPasswordInput('');
@@ -650,14 +684,16 @@ export default function Home() {
     );
   }
 
-  if (!isAuthed) {
+  if (!isAuthed || !username) {
     return (
       <main className="app-shell">
         <form className="auth-card" onSubmit={handleAuth}>
           <div>
             <h1 className="auth-title">Neniboo Chat</h1>
             <p className="auth-subtitle">
-              Enter the shared password. Sweet little space for us.
+              {hasDeviceAuth
+                ? 'Choose a username to continue.'
+                : 'Enter the shared password. Sweet little space for us.'}
             </p>
           </div>
           {!username && (
@@ -673,17 +709,19 @@ export default function Home() {
               />
             </div>
           )}
-          <div className="auth-field">
-            <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              type="password"
-              value={passwordInput}
-              onChange={(event) => setPasswordInput(event.target.value)}
-              placeholder="Shared password"
-              autoComplete="off"
-            />
-          </div>
+          {!hasDeviceAuth && (
+            <div className="auth-field">
+              <label htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                value={passwordInput}
+                onChange={(event) => setPasswordInput(event.target.value)}
+                placeholder="Shared password"
+                autoComplete="off"
+              />
+            </div>
+          )}
           {authError && <div className="error-text">{authError}</div>}
           <div className="auth-actions">
             <button className="primary-btn" type="submit">
@@ -694,7 +732,7 @@ export default function Home() {
                 type="button"
                 className="secondary-btn"
                 onClick={() => {
-                  window.localStorage.removeItem('chat_username');
+                  window.localStorage.removeItem(USERNAME_KEY);
                   setUsername('');
                 }}
               >
@@ -717,7 +755,7 @@ export default function Home() {
         <header className="chat-header">
           <div className="header-title">
             <span>Neniboo Chat</span>
-            <span>If no one told u today, i think u so cute muah!!</span>
+            <span>{headerPhrase}</span>
           </div>
           <div className="header-meta">
             {unread && (
