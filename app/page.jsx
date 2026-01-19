@@ -10,6 +10,8 @@ const DEFAULT_HEADER_PHRASE = 'If no one told u today, i think u so cute muah!!'
 const EMOJIS = ['😂', '👍', '😮', '😢', '😡'];
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
 const UPLOAD_BUCKET = 'chat-uploads';
+const MESSAGE_PAGE_SIZE = 200;
+const LOAD_MORE_THRESHOLD = 140;
 
 const formatTime = (value) => {
   if (!value) return '';
@@ -68,6 +70,8 @@ export default function Home() {
 
   const [messages, setMessages] = useState([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
   const [newMessage, setNewMessage] = useState('');
   const [replyTo, setReplyTo] = useState(null);
   const [editingId, setEditingId] = useState(null);
@@ -91,6 +95,7 @@ export default function Home() {
   const swipeMetaRef = useRef({ startX: 0, startY: 0, active: false, isOwn: false });
   const swipePulseRef = useRef(null);
   const presenceRef = useRef(null);
+  const loadingOlderRef = useRef(false);
   const typingTimeoutRef = useRef(null);
   const [isTyping, setIsTyping] = useState(false);
   const lastMessageRef = useRef(null);
@@ -165,14 +170,17 @@ export default function Home() {
       const { data, error } = await supabase
         .from('messages')
         .select('*')
-        .order('created_at', { ascending: true });
+        .order('created_at', { ascending: false })
+        .limit(MESSAGE_PAGE_SIZE);
 
       if (error) {
         console.error(error);
       }
 
       if (isMounted) {
-        setMessages(data || []);
+        const ordered = (data || []).slice().reverse();
+        setMessages(ordered);
+        setHasMoreMessages((data || []).length === MESSAGE_PAGE_SIZE);
         setLoadingMessages(false);
       }
     };
@@ -322,10 +330,60 @@ export default function Home() {
     forceScrollRef.current = false;
   }, [messages.length, username]);
 
+  const loadOlderMessages = async () => {
+    if (loadingOlderRef.current || loadingMessages || loadingMoreMessages || !hasMoreMessages) {
+      return;
+    }
+    const oldest = messages[0];
+    if (!oldest?.created_at) return;
+
+    loadingOlderRef.current = true;
+    setLoadingMoreMessages(true);
+    const container = listRef.current;
+    const prevScrollHeight = container?.scrollHeight ?? 0;
+    const prevScrollTop = container?.scrollTop ?? 0;
+
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .lt('created_at', oldest.created_at)
+        .limit(MESSAGE_PAGE_SIZE);
+
+      if (error) {
+        console.error(error);
+      }
+
+      const older = (data || []).slice().reverse();
+      if (older.length > 0) {
+        setMessages((prev) => {
+          const existingIds = new Set(prev.map((item) => item.id));
+          const nextOlder = older.filter((item) => !existingIds.has(item.id));
+          return nextOlder.length > 0 ? [...nextOlder, ...prev] : prev;
+        });
+      }
+      setHasMoreMessages((data || []).length === MESSAGE_PAGE_SIZE);
+
+      if (container) {
+        window.requestAnimationFrame(() => {
+          const newScrollHeight = container.scrollHeight;
+          container.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+        });
+      }
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingMoreMessages(false);
+    }
+  };
+
   const handleScroll = () => {
     const container = listRef.current;
     if (!container) return;
     stickToBottomRef.current = isNearBottom(container);
+    if (container.scrollTop <= LOAD_MORE_THRESHOLD && hasMoreMessages && messages.length > 0) {
+      loadOlderMessages();
+    }
   };
 
   const handleAuth = (event) => {
@@ -816,6 +874,9 @@ export default function Home() {
             </aside>
             <div className="message-pane">
               <div className="message-list" ref={listRef} onScroll={handleScroll}>
+                {loadingMoreMessages && !loadingMessages && (
+                  <div className="empty-state">Loading older messages...</div>
+                )}
                 {loadingMessages && <div className="empty-state">Loading messages...</div>}
                 {!loadingMessages && messages.length === 0 && (
                   <div className="empty-state">Start the first message.</div>
