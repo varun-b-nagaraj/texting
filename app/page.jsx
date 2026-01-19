@@ -7,14 +7,40 @@ const DEVICE_AUTH_KEY = 'chat_authed';
 const USERNAME_KEY = 'chat_username';
 const DEFAULT_HEADER_PHRASE = 'If no one told u today, i think u so cute muah!!';
 
-const EMOJIS = ['❤️', '😂', '👍', '😮', '😢', '😡'];
+const EMOJIS = ['😂', '👍', '😮', '😢', '😡'];
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
 const UPLOAD_BUCKET = 'chat-uploads';
 
 const formatTime = (value) => {
   if (!value) return '';
   const date = new Date(value);
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (Number.isNaN(date.getTime())) return '';
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfYesterday = new Date(startOfToday);
+  startOfYesterday.setDate(startOfYesterday.getDate() - 1);
+  const startOfTomorrow = new Date(startOfToday);
+  startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  if (date >= startOfToday && date < startOfTomorrow) {
+    return time;
+  }
+
+  if (date >= startOfYesterday && date < startOfToday) {
+    return `Yesterday ${time}`;
+  }
+
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const dateLabel = date.toLocaleDateString([], {
+    month: 'short',
+    day: 'numeric',
+    ...(sameYear ? {} : { year: 'numeric' })
+  });
+
+  return `${dateLabel} ${time}`;
 };
 
 const updateFavicon = (showUnread) => {
@@ -647,7 +673,8 @@ export default function Home() {
   };
 
   const triggerSwipePulse = (message, direction) => {
-    setSwipePulse({ id: message.id, direction });
+    const pulseDirection = direction === 'right' ? 'left' : 'right';
+    setSwipePulse({ id: message.id, direction: pulseDirection });
     if (swipePulseRef.current) {
       window.clearTimeout(swipePulseRef.current);
     }
@@ -839,7 +866,7 @@ export default function Home() {
                           }`}
                           style={
                             swipeMessageId === message.id
-                              ? { transform: `translateX(${swipeOffset}px)` }
+                              ? { transform: `translateX(${swipeOffset * -1}px)` }
                               : undefined
                           }
                           onPointerDown={(event) => handleSwipeStart(message, event)}

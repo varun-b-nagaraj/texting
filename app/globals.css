@@ -1,13 +1,13 @@
 :root {
-  --black: #241118;
-  --white: #fff6fb;
-  --white-soft: #ffeaf4;
-  --line: rgba(36, 17, 24, 0.16);
-  --shadow: rgba(255, 111, 163, 0.18);
-  --green: #ff6fa3;
-  --accent: #ff6fa3;
-  --accent-deep: #e84c8b;
-  --accent-soft: #ffd2e3;
+  --black: #0b0b0b;
+  --white: #ffffff;
+  --white-soft: #f4f4f4;
+  --line: rgba(0, 0, 0, 0.14);
+  --shadow: rgba(0, 0, 0, 0.14);
+  --green: #000000;
+  --accent: #0b0b0b;
+  --accent-deep: #000000;
+  --accent-soft: #e6e6e6;
   --font-sans: "Space Grotesk", sans-serif;
   --font-serif: "Instrument Serif", serif;
 }
@@ -22,93 +22,12 @@ body {
   margin: 0;
   font-family: var(--font-sans);
   color: var(--black);
-  background: radial-gradient(circle at top, #fff1f8 0%, #ffe6f1 40%, #ffd7e8 100%);
+  background: var(--white);
   min-height: 100%;
   height: 100%;
   overflow-x: hidden;
   overflow-y: hidden;
   overscroll-behavior-x: none;
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  background-image: linear-gradient(
-      120deg,
-    rgba(255, 111, 163, 0.08) 0%,
-      rgba(255, 111, 163, 0.04) 40%,
-      rgba(255, 255, 255, 0.2) 100%
-    ),
-    repeating-linear-gradient(
-      0deg,
-      rgba(255, 111, 163, 0.08),
-      rgba(255, 111, 163, 0.08) 1px,
-      transparent 1px,
-      transparent 6px
-    );
-  pointer-events: none;
-  z-index: -1;
-}
-
-.hearts-overlay {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  overflow: hidden;
-  z-index: 0;
-  --gutter: max(0px, calc((100vw - 500px) / 2));
-}
-
-.heart-lane {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: var(--gutter);
-  overflow: hidden;
-}
-
-.heart-lane.left {
-  left: 0;
-}
-
-.heart-lane.right {
-  right: 0;
-}
-
-.heart-item {
-  position: absolute;
-  left: var(--left);
-  top: -12vh;
-  font-size: var(--size);
-  opacity: var(--opacity);
-  color: var(--accent-deep);
-  animation: heartFall var(--duration) linear forwards;
-  transform: translateX(0);
-  text-shadow: 0 8px 18px rgba(255, 111, 163, 0.35);
-  white-space: nowrap;
-}
-
-.heart-item.phrase {
-  font-family: var(--font-serif);
-  font-size: calc(var(--size) * 0.7);
-  color: var(--black);
-  background: rgba(255, 214, 228, 0.9);
-  border: 1px solid rgba(255, 111, 163, 0.55);
-  padding: 6px 10px;
-  border-radius: 8px;
-  text-transform: lowercase;
-}
-
-.heart-item.bubble {
-  color: var(--accent-deep);
-  text-shadow: 0 10px 24px rgba(255, 111, 163, 0.45);
-}
-
-@media (max-width: 500px) {
-  .hearts-overlay {
-    display: none;
-  }
 }
 
 main {
@@ -203,7 +122,7 @@ textarea {
 
 .primary-btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(255, 111, 163, 0.35);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
 }
 
 .secondary-btn {
@@ -223,7 +142,7 @@ textarea {
 .error-text {
   font-size: 13px;
   color: var(--black);
-  background: rgba(255, 111, 163, 0.12);
+  background: rgba(0, 0, 0, 0.06);
   border-radius: 10px;
   padding: 8px 10px;
 }
@@ -345,7 +264,7 @@ textarea {
 .presence-dot.online {
   background: var(--accent-deep);
   border-color: var(--accent-deep);
-  box-shadow: 0 0 0 2px rgba(255, 111, 163, 0.25);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.18);
 }
 
 .chat-body {
@@ -564,7 +483,7 @@ textarea {
 }
 
 .reaction-picker .emoji-plus {
-  border-left: 1px solid rgba(255, 111, 163, 0.3);
+  border-left: 1px solid rgba(0, 0, 0, 0.2);
   padding-left: 10px;
   font-weight: 600;
   font-size: 18px;
@@ -696,14 +615,6 @@ textarea {
   }
 }
 
-@keyframes heartFall {
-  0% {
-    transform: translateY(-10vh) translateX(0);
-  }
-  100% {
-    transform: translateY(115vh) translateX(var(--drift));
-  }
-}
 
 @keyframes typingBounce {
   0%,
