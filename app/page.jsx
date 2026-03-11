@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
-const DEVICE_AUTH_KEY = 'chat_authed';
 const USERNAME_KEY = 'chat_username';
 const ROOM_CODE_KEY = 'chat_room_code';
+const ALLOWED_ROOM_CODES = new Set(['neniboo!', 'hasitBandaru!']);
 const DEFAULT_HEADER_PHRASE = 'If no one told u today, i think u so cute muah!!';
 
 const EMOJIS = ['😂', '👍', '😮', '😢', '😡'];
@@ -64,9 +64,7 @@ export default function Home() {
   const [usernameInput, setUsernameInput] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [roomCodeInput, setRoomCodeInput] = useState('');
-  const [passwordInput, setPasswordInput] = useState('');
   const [isAuthed, setIsAuthed] = useState(false);
-  const [hasDeviceAuth, setHasDeviceAuth] = useState(false);
   const [authError, setAuthError] = useState('');
   const [configError, setConfigError] = useState('');
   const [headerPhrase, setHeaderPhrase] = useState(DEFAULT_HEADER_PHRASE);
@@ -108,14 +106,12 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior, block: 'end' });
   };
 
-  const isConfigured = Boolean(
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY && process.env.NEXT_PUBLIC_CHAT_PASSWORD
-  );
+  const isConfigured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 
   useEffect(() => {
     if (!isConfigured) {
       setConfigError(
-        'Missing environment variables. Check NEXT_PUBLIC_SUPABASE_ANON_KEY and NEXT_PUBLIC_CHAT_PASSWORD.'
+        'Missing environment variable. Check NEXT_PUBLIC_SUPABASE_ANON_KEY.'
       );
     }
   }, [isConfigured]);
@@ -127,12 +123,12 @@ export default function Home() {
       setUsername(saved);
     }
     const savedRoom = window.localStorage.getItem(ROOM_CODE_KEY);
-    if (savedRoom) {
+    if (savedRoom && ALLOWED_ROOM_CODES.has(savedRoom)) {
       setRoomCode(savedRoom);
+    } else if (savedRoom) {
+      window.localStorage.removeItem(ROOM_CODE_KEY);
     }
-    const deviceAuth = window.localStorage.getItem(DEVICE_AUTH_KEY) === 'true';
-    if (deviceAuth) {
-      setHasDeviceAuth(true);
+    if (saved && savedRoom && ALLOWED_ROOM_CODES.has(savedRoom)) {
       setIsAuthed(true);
     }
   }, []);
@@ -338,14 +334,6 @@ export default function Home() {
 
   const handleAuth = (event) => {
     event.preventDefault();
-    const sharedPassword = process.env.NEXT_PUBLIC_CHAT_PASSWORD || '';
-
-    if (!hasDeviceAuth) {
-      if (passwordInput.trim() !== sharedPassword) {
-        setAuthError('Incorrect password.');
-        return;
-      }
-    }
 
     const candidate = username || usernameInput.trim();
     const nextRoomCode = roomCode || roomCodeInput.trim();
@@ -355,6 +343,10 @@ export default function Home() {
     }
     if (!nextRoomCode) {
       setAuthError('Enter a room code to continue.');
+      return;
+    }
+    if (!ALLOWED_ROOM_CODES.has(nextRoomCode)) {
+      setAuthError('Invalid room code.');
       return;
     }
 
@@ -367,11 +359,8 @@ export default function Home() {
       setRoomCode(nextRoomCode);
     }
 
-    window.localStorage.setItem(DEVICE_AUTH_KEY, 'true');
-    setHasDeviceAuth(true);
     setAuthError('');
     setIsAuthed(true);
-    setPasswordInput('');
   };
 
   const addPendingImages = (files) => {
@@ -692,7 +681,7 @@ export default function Home() {
         <div className="auth-card">
           <h1 className="auth-title">Neniboo Chat</h1>
           <p className="auth-subtitle">
-            Add your credentials and shared password to continue.
+            Enter your username and room code to continue.
           </p>
           {configError && <div className="error-text">{configError}</div>}
         </div>
@@ -706,11 +695,7 @@ export default function Home() {
         <form className="auth-card" onSubmit={handleAuth}>
           <div>
             <h1 className="auth-title">Neniboo Chat</h1>
-            <p className="auth-subtitle">
-              {hasDeviceAuth
-                ? 'Choose a username to continue.'
-                : 'Enter the shared password. Sweet little space for us.'}
-            </p>
+            <p className="auth-subtitle">Enter your username and room code.</p>
           </div>
           {!username && (
             <div className="auth-field">
@@ -734,19 +719,6 @@ export default function Home() {
                 onChange={(event) => setRoomCodeInput(event.target.value)}
                 placeholder="Enter room code"
                 maxLength={60}
-                autoComplete="off"
-              />
-            </div>
-          )}
-          {!hasDeviceAuth && (
-            <div className="auth-field">
-              <label htmlFor="password">Password</label>
-              <input
-                id="password"
-                type="password"
-                value={passwordInput}
-                onChange={(event) => setPasswordInput(event.target.value)}
-                placeholder="Shared password"
                 autoComplete="off"
               />
             </div>
