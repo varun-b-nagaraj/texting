@@ -8,12 +8,34 @@ const copyHeaders = (headers) => {
   const forwarded = new Headers();
   headers.forEach((value, key) => {
     const lower = key.toLowerCase();
-    if (lower === 'host' || lower === 'content-length' || lower === 'connection') {
+    if (
+      lower === 'host' ||
+      lower === 'content-length' ||
+      lower === 'connection' ||
+      lower === 'accept-encoding'
+    ) {
       return;
     }
     forwarded.set(key, value);
   });
+  // Avoid compressed payload/header mismatches through the proxy.
+  forwarded.set('accept-encoding', 'identity');
   return forwarded;
+};
+
+const sanitizeResponseHeaders = (headers) => {
+  const next = new Headers(headers);
+  next.delete('content-encoding');
+  next.delete('content-length');
+  next.delete('transfer-encoding');
+  next.delete('connection');
+  next.delete('keep-alive');
+  next.delete('proxy-authenticate');
+  next.delete('proxy-authorization');
+  next.delete('te');
+  next.delete('trailer');
+  next.delete('upgrade');
+  return next;
 };
 
 const proxy = async (request, { params }) => {
@@ -44,7 +66,7 @@ const proxy = async (request, { params }) => {
     redirect: 'manual'
   });
 
-  const responseHeaders = new Headers(upstream.headers);
+  const responseHeaders = sanitizeResponseHeaders(upstream.headers);
   responseHeaders.set('cache-control', 'no-store');
 
   return new Response(upstream.body, {
