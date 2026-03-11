@@ -112,7 +112,7 @@ export default function Home() {
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
   const [swipePulse, setSwipePulse] = useState(null);
-  const isRestrictedRoom = roomCode === 'hasitBandaru!';
+  const isRestrictedRoom = false;
 
   const listRef = useRef(null);
   const bottomRef = useRef(null);
