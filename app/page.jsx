@@ -13,6 +13,29 @@ const GROUP_WINDOW_MS = 5 * 60 * 1000;
 const UPLOAD_BUCKET = 'chat-uploads';
 const MESSAGE_PAGE_SIZE = 200;
 const LOAD_MORE_THRESHOLD = 140;
+const ENCRYPTION_PREFIX = 'enc:v1:';
+const ENCRYPTION_SALT = 'neniboo-chat-e2ee-salt-v1';
+const ENCRYPTION_ITERATIONS = 250000;
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+const bytesToBase64 = (bytes) => {
+  let binary = '';
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+};
+
+const base64ToBytes = (value) => {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+};
 
 const formatTime = (value) => {
   if (!value) return '';
@@ -99,6 +122,7 @@ export default function Home() {
   const loadingOlderRef = useRef(false);
   const lastMessageRef = useRef(null);
   const forceScrollRef = useRef(false);
+  const encryptionKeyCacheRef = useRef(new Map());
 
   const isNearBottom = (container, threshold = 160) =>
     container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
@@ -108,6 +132,92 @@ export default function Home() {
   };
 
   const isConfigured = Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
+
+  const getEncryptionKey = async (code) => {
+    if (encryptionKeyCacheRef.current.has(code)) {
+      return encryptionKeyCacheRef.current.get(code);
+    }
+    if (typeof window === 'undefined' || !window.crypto?.subtle) {
+      return null;
+    }
+
+    const keyMaterial = await window.crypto.subtle.importKey(
+      'raw',
+      textEncoder.encode(code),
+      'PBKDF2',
+      false,
+      ['deriveKey']
+    );
+
+    const key = await window.crypto.subtle.deriveKey(
+      {
+        name: 'PBKDF2',
+        salt: textEncoder.encode(ENCRYPTION_SALT),
+        iterations: ENCRYPTION_ITERATIONS,
+        hash: 'SHA-256'
+      },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+
+    encryptionKeyCacheRef.current.set(code, key);
+    return key;
+  };
+
+  const encryptMessageContent = async (value) => {
+    if (!value || !roomCode) return value;
+    if (typeof window === 'undefined' || !window.crypto?.subtle) return value;
+    const key = await getEncryptionKey(roomCode);
+    if (!key) return value;
+
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await window.crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      textEncoder.encode(value)
+    );
+    return `${ENCRYPTION_PREFIX}${bytesToBase64(iv)}.${bytesToBase64(new Uint8Array(ciphertext))}`;
+  };
+
+  const decryptMessageContent = async (value) => {
+    if (!value || typeof value !== 'string') return value;
+    if (!value.startsWith(ENCRYPTION_PREFIX)) return value;
+    if (typeof window === 'undefined' || !window.crypto?.subtle) {
+      return '[Encrypted message]';
+    }
+
+    try {
+      const payload = value.slice(ENCRYPTION_PREFIX.length);
+      const [ivBase64, cipherBase64] = payload.split('.');
+      if (!ivBase64 || !cipherBase64) return '[Unable to decrypt message]';
+      const key = await getEncryptionKey(roomCode);
+      if (!key) return '[Unable to decrypt message]';
+
+      const iv = base64ToBytes(ivBase64);
+      const ciphertext = base64ToBytes(cipherBase64);
+      const plaintext = await window.crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        ciphertext
+      );
+      return textDecoder.decode(plaintext);
+    } catch {
+      return '[Unable to decrypt message]';
+    }
+  };
+
+  const decryptMessageRecord = async (record) => {
+    if (!record) return record;
+    return {
+      ...record,
+      content: await decryptMessageContent(record.content)
+    };
+  };
+
+  const decryptMessageList = async (list) =>
+    Promise.all((list || []).map((item) => decryptMessageRecord(item)));
 
   useEffect(() => {
     if (!isConfigured) {
@@ -180,7 +290,8 @@ export default function Home() {
       }
 
       if (isMounted) {
-        const ordered = (data || []).slice().reverse();
+        const orderedRaw = (data || []).slice().reverse();
+        const ordered = await decryptMessageList(orderedRaw);
         setMessages(ordered);
         setOnlineUsers(Array.from(new Set([username, ...ordered.map((item) => item.user_name)])));
         setTypingUsers([]);
@@ -302,7 +413,8 @@ export default function Home() {
         console.error(error);
       }
 
-      const older = (data || []).slice().reverse();
+      const olderRaw = (data || []).slice().reverse();
+      const older = await decryptMessageList(olderRaw);
       if (older.length > 0) {
         setMessages((prev) => {
           const existingIds = new Set(prev.map((item) => item.id));
@@ -435,16 +547,18 @@ export default function Home() {
       const trimmed = editingText.trim();
       if (!trimmed) return;
       setSending(true);
+      const encrypted = await encryptMessageContent(trimmed);
       const { data } = await supabase
         .from('messages')
-        .update({ content: trimmed, edited_at: new Date().toISOString() })
+        .update({ content: encrypted, edited_at: new Date().toISOString() })
         .eq('id', editingId)
         .eq('room_code', roomCode)
         .select('*')
         .single();
       if (data) {
+        const decoded = await decryptMessageRecord(data);
         setMessages((prev) =>
-          prev.map((item) => (item.id === editingId ? data : item))
+          prev.map((item) => (item.id === editingId ? decoded : item))
         );
       }
       setEditingId(null);
@@ -489,12 +603,13 @@ export default function Home() {
       return;
     }
 
+    const encrypted = trimmed ? await encryptMessageContent(trimmed) : null;
     const { data } = await supabase
       .from('messages')
       .insert({
         id: messageId,
         room_code: roomCode,
-        content: trimmed || null,
+        content: encrypted,
         user_name: username,
         reply_to: isRestrictedRoom ? null : replyTo?.id || null,
         attachments: isRestrictedRoom ? [] : attachments
@@ -503,8 +618,9 @@ export default function Home() {
       .single();
 
     if (data) {
+      const decoded = await decryptMessageRecord(data);
       setMessages((prev) =>
-        [...prev, data].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+        [...prev, decoded].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
       );
     }
 
