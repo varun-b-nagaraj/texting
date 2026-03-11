@@ -89,6 +89,7 @@ export default function Home() {
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
   const [swipePulse, setSwipePulse] = useState(null);
+  const isRestrictedRoom = roomCode === 'hasitBandaru!';
 
   const listRef = useRef(null);
   const bottomRef = useRef(null);
@@ -364,7 +365,7 @@ export default function Home() {
   };
 
   const addPendingImages = (files) => {
-    if (!files || files.length === 0 || editingId) return;
+    if (isRestrictedRoom || !files || files.length === 0 || editingId) return;
     const next = Array.from(files)
       .filter((file) => file.type.startsWith('image/'))
       .map((file) => ({
@@ -397,19 +398,29 @@ export default function Home() {
     });
   };
 
+  useEffect(() => {
+    if (!isRestrictedRoom) return;
+    setReplyTo(null);
+    setEditingId(null);
+    setEditingText('');
+    setReactionTarget(null);
+    clearPendingImages();
+  }, [isRestrictedRoom]);
+
   const handleDragOver = (event) => {
-    if (editingId) return;
+    if (isRestrictedRoom || editingId) return;
     event.preventDefault();
     setIsDraggingFiles(true);
   };
 
   const handleDragLeave = (event) => {
+    if (isRestrictedRoom) return;
     if (event.currentTarget.contains(event.relatedTarget)) return;
     setIsDraggingFiles(false);
   };
 
   const handleDrop = (event) => {
-    if (editingId) return;
+    if (isRestrictedRoom || editingId) return;
     event.preventDefault();
     setIsDraggingFiles(false);
     addPendingImages(event.dataTransfer.files);
@@ -420,7 +431,7 @@ export default function Home() {
     forceScrollRef.current = true;
     stickToBottomRef.current = true;
 
-    if (editingId) {
+    if (!isRestrictedRoom && editingId) {
       const trimmed = editingText.trim();
       if (!trimmed) return;
       setSending(true);
@@ -443,13 +454,13 @@ export default function Home() {
     }
 
     const trimmed = newMessage.trim();
-    if (!trimmed && pendingImages.length === 0) return;
+    if (!trimmed && (isRestrictedRoom || pendingImages.length === 0)) return;
 
     setSending(true);
     const messageId = crypto.randomUUID();
     const attachments = [];
 
-    if (pendingImages.length > 0) {
+    if (!isRestrictedRoom && pendingImages.length > 0) {
       for (const item of pendingImages) {
         const safeName = item.file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
         const path = `${messageId}/${Date.now()}-${safeName}`;
@@ -485,8 +496,8 @@ export default function Home() {
         room_code: roomCode,
         content: trimmed || null,
         user_name: username,
-        reply_to: replyTo?.id || null,
-        attachments
+        reply_to: isRestrictedRoom ? null : replyTo?.id || null,
+        attachments: isRestrictedRoom ? [] : attachments
       })
       .select('*')
       .single();
@@ -499,7 +510,9 @@ export default function Home() {
 
     setNewMessage('');
     setReplyTo(null);
-    clearPendingImages();
+    if (!isRestrictedRoom) {
+      clearPendingImages();
+    }
     setSending(false);
     markRead(new Date().toISOString());
   };
@@ -516,12 +529,14 @@ export default function Home() {
   };
 
   const startReply = (message) => {
+    if (isRestrictedRoom) return;
     setReplyTo(message);
     setEditingId(null);
     setEditingText('');
   };
 
   const startEdit = (message) => {
+    if (isRestrictedRoom) return;
     setEditingId(message.id);
     setEditingText(message.content || '');
     setReplyTo(null);
@@ -536,6 +551,7 @@ export default function Home() {
   };
 
   const handleDelete = async (messageId) => {
+    if (isRestrictedRoom) return;
     const deleted = {
       deleted_at: new Date().toISOString(),
       content: null,
@@ -553,6 +569,7 @@ export default function Home() {
   };
 
   const toggleReaction = async (messageId, emoji) => {
+    if (isRestrictedRoom) return;
     const message = messageMap[messageId];
     if (!message) return;
 
@@ -589,12 +606,14 @@ export default function Home() {
   };
 
   const promptCustomReaction = (messageId) => {
+    if (isRestrictedRoom) return;
     const emoji = window.prompt('Type or paste an emoji');
     if (!emoji) return;
     toggleReaction(messageId, emoji.trim());
   };
 
   const handleSwipeStart = (message, event) => {
+    if (isRestrictedRoom) return;
     swipeMetaRef.current = {
       startX: event.clientX,
       startY: event.clientY,
@@ -608,6 +627,7 @@ export default function Home() {
   };
 
   const handleSwipeMove = (message, event) => {
+    if (isRestrictedRoom) return;
     if (swipeMessageId !== message.id) return;
     const meta = swipeMetaRef.current;
     const deltaX = event.clientX - meta.startX;
@@ -634,6 +654,7 @@ export default function Home() {
   };
 
   const handleSwipeEnd = (message, event) => {
+    if (isRestrictedRoom) return;
     if (swipeMessageId !== message.id) return;
     const meta = swipeMetaRef.current;
     const deltaX = event.clientX - meta.startX;
@@ -662,7 +683,7 @@ export default function Home() {
   };
 
   const handleWheelSwipe = (message, event) => {
-    if (editingId) return;
+    if (isRestrictedRoom || editingId) return;
     if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
     if (Math.abs(event.deltaX) < 20) return;
     event.preventDefault();
@@ -759,8 +780,9 @@ export default function Home() {
   }
 
   const composerValue = editingId ? editingText : newMessage;
-  const hasContext = Boolean(replyTo || editingId);
+  const hasContext = !isRestrictedRoom && Boolean(replyTo || editingId);
   const presenceUsers = onlineUsers.length ? onlineUsers : [username];
+  const roomSubtitle = isRestrictedRoom ? 'Room: hasitBandaru!' : headerPhrase;
 
   return (
     <main className="app-shell">
@@ -768,7 +790,7 @@ export default function Home() {
         <header className="chat-header">
           <div className="header-title">
             <span>Neniboo Chat</span>
-            <span>{headerPhrase}</span>
+            <span>{roomSubtitle}</span>
           </div>
           <div className="header-meta">
             {unread && (
@@ -864,7 +886,7 @@ export default function Home() {
                           onPointerCancel={(event) => handleSwipeEnd(message, event)}
                           onWheel={(event) => handleWheelSwipe(message, event)}
                         >
-                          {replyMessage && (
+                          {!isRestrictedRoom && replyMessage && (
                             <div className="reply-preview">
                               Replying to {replyMessage.user_name}:{' '}
                               {replyMessage.content ||
@@ -877,7 +899,7 @@ export default function Home() {
                           {isDeleted ? 'Message deleted' : message.content}
                         </div>
 
-                        {!isDeleted && (
+                        {!isDeleted && !isRestrictedRoom && (
                           <div className="message-actions">
                             <button
                               className="action-btn"
@@ -918,7 +940,7 @@ export default function Home() {
                           </div>
                         )}
 
-                        {!isDeleted && attachments.length > 0 && (
+                        {!isDeleted && !isRestrictedRoom && attachments.length > 0 && (
                           <div className="attachment-row">
                             {attachments.map((attachment) => (
                               <a
@@ -934,7 +956,7 @@ export default function Home() {
                           </div>
                         )}
 
-                        {reactionTarget === message.id && (
+                        {!isRestrictedRoom && reactionTarget === message.id && (
                           <div className="reaction-picker">
                             {EMOJIS.map((emoji) => (
                               <button
@@ -956,7 +978,7 @@ export default function Home() {
                           </div>
                         )}
 
-                        {Object.keys(reactions).length > 0 && (
+                        {!isRestrictedRoom && Object.keys(reactions).length > 0 && (
                           <div className="reaction-row">
                             {Object.entries(reactions).map(([emoji, users]) => (
                               <button
@@ -1007,7 +1029,7 @@ export default function Home() {
                 </button>
               </div>
             )}
-            {pendingImages.length > 0 && (
+            {!isRestrictedRoom && pendingImages.length > 0 && (
               <div className="pending-attachments">
                 {pendingImages.map((item) => (
                   <div className="pending-card" key={item.id}>
