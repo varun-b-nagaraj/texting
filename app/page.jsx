@@ -15,6 +15,8 @@ const GROUP_WINDOW_MS = 5 * 60 * 1000;
 const UPLOAD_BUCKET = 'chat-uploads';
 const MESSAGE_PAGE_SIZE = 200;
 const LOAD_MORE_THRESHOLD = 140;
+const TYPING_IDLE_MS = 1400;
+const TYPING_ACTIVE_WINDOW_MS = 9000;
 const ENCRYPTION_PREFIX = 'enc:v1:';
 const ENCRYPTION_SALT = 'neniboo-chat-e2ee-salt-v1';
 const ENCRYPTION_ITERATIONS = 250000;
@@ -124,7 +126,9 @@ export default function Home() {
   const loadingOlderRef = useRef(false);
   const lastMessageRef = useRef(null);
   const forceScrollRef = useRef(false);
+  const typingTimeoutRef = useRef(null);
   const encryptionKeyCacheRef = useRef(new Map());
+  const [isTyping, setIsTyping] = useState(false);
 
   const isNearBottom = (container, threshold = 160) =>
     container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
@@ -221,6 +225,21 @@ export default function Home() {
   const decryptMessageList = async (list) =>
     Promise.all((list || []).map((item) => decryptMessageRecord(item)));
 
+  const setTypingState = async (typing) => {
+    if (!username || !roomCode || !isConfigured) return;
+    const { error } = await supabase.from('typing_status').upsert(
+      {
+        username,
+        room_code: roomCode,
+        is_typing: typing,
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'username,room_code' }
+    );
+    if (error) return;
+    setIsTyping(typing);
+  };
+
   useEffect(() => {
     if (!isConfigured) {
       setConfigError(
@@ -277,7 +296,6 @@ export default function Home() {
         const ordered = await decryptMessageList(orderedRaw);
         setMessages(ordered);
         setOnlineUsers(Array.from(new Set([username, ...ordered.map((item) => item.user_name)])));
-        setTypingUsers([]);
         setHasMoreMessages((data || []).length === MESSAGE_PAGE_SIZE);
         if (showLoading) {
           setLoadingMessages(false);
@@ -298,15 +316,36 @@ export default function Home() {
       }
     };
 
+    const loadTyping = async () => {
+      const activeCutoff = new Date(Date.now() - TYPING_ACTIVE_WINDOW_MS).toISOString();
+      const { data, error } = await supabase
+        .from('typing_status')
+        .select('username')
+        .eq('room_code', roomCode)
+        .eq('is_typing', true)
+        .gt('updated_at', activeCutoff);
+
+      if (error || !isMounted) return;
+      const names = Array.from(
+        new Set((data || []).map((item) => item.username).filter((name) => name && name !== username))
+      );
+      setTypingUsers(names);
+    };
+
     loadMessages(true);
     loadReads();
+    loadTyping();
     const poll = window.setInterval(() => {
       loadMessages();
       loadReads();
+      loadTyping();
     }, 2500);
 
     return () => {
       isMounted = false;
+      if (typingTimeoutRef.current) {
+        window.clearTimeout(typingTimeoutRef.current);
+      }
       window.clearInterval(poll);
     };
   }, [isAuthed, username, roomCode, isConfigured]);
@@ -612,6 +651,9 @@ export default function Home() {
     if (!isRestrictedRoom) {
       clearPendingImages();
     }
+    if (isTyping) {
+      await setTypingState(false);
+    }
     setSending(false);
     markRead(new Date().toISOString());
   };
@@ -624,7 +666,29 @@ export default function Home() {
   };
 
   const updateTyping = (value) => {
-    return value;
+    if (!isAuthed || !username || !roomCode) return;
+    const hasText = value.trim().length > 0;
+
+    if (!hasText) {
+      if (typingTimeoutRef.current) {
+        window.clearTimeout(typingTimeoutRef.current);
+      }
+      if (isTyping) {
+        setTypingState(false);
+      }
+      return;
+    }
+
+    if (!isTyping) {
+      setTypingState(true);
+    }
+
+    if (typingTimeoutRef.current) {
+      window.clearTimeout(typingTimeoutRef.current);
+    }
+    typingTimeoutRef.current = window.setTimeout(() => {
+      setTypingState(false);
+    }, TYPING_IDLE_MS);
   };
 
   const startReply = (message) => {
@@ -883,6 +947,9 @@ export default function Home() {
   const presenceUsers = onlineUsers.length ? onlineUsers : [username];
   const roomSubtitle = roomCode === HASIT_ROOM_CODE ? 'Room: hasitBandaru!' : headerPhrase;
   const handleLogout = () => {
+    if (isTyping) {
+      setTypingState(false);
+    }
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem(ROOM_CODE_KEY);
     }
