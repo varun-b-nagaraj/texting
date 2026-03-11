@@ -198,6 +198,20 @@ textarea {
   font-size: 13px;
 }
 
+.header-btn {
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  background: transparent;
+  color: var(--white);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.header-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .unread-indicator {
   display: inline-flex;
   align-items: center;

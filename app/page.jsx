@@ -783,6 +783,15 @@ export default function Home() {
   const hasContext = !isRestrictedRoom && Boolean(replyTo || editingId);
   const presenceUsers = onlineUsers.length ? onlineUsers : [username];
   const roomSubtitle = isRestrictedRoom ? 'Room: hasitBandaru!' : headerPhrase;
+  const handleLogout = () => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(ROOM_CODE_KEY);
+    }
+    setRoomCode('');
+    setRoomCodeInput('');
+    setIsAuthed(false);
+    setAuthError('');
+  };
 
   return (
     <main className="app-shell">
@@ -798,6 +807,9 @@ export default function Home() {
                 Unread <span className="unread-dot" />
               </span>
             )}
+            <button type="button" className="header-btn" onClick={handleLogout}>
+              Log out
+            </button>
           </div>
         </header>
 
