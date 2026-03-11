@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabaseClient';
 
 const DEVICE_AUTH_KEY = 'chat_authed';
 const USERNAME_KEY = 'chat_username';
+const ROOM_CODE_KEY = 'chat_room_code';
 const DEFAULT_HEADER_PHRASE = 'If no one told u today, i think u so cute muah!!';
 
 const EMOJIS = ['😂', '👍', '😮', '😢', '😡'];
@@ -61,6 +62,8 @@ const updateFavicon = (showUnread) => {
 export default function Home() {
   const [username, setUsername] = useState('');
   const [usernameInput, setUsernameInput] = useState('');
+  const [roomCode, setRoomCode] = useState('');
+  const [roomCodeInput, setRoomCodeInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [isAuthed, setIsAuthed] = useState(false);
   const [hasDeviceAuth, setHasDeviceAuth] = useState(false);
@@ -94,10 +97,7 @@ export default function Home() {
   const stickToBottomRef = useRef(true);
   const swipeMetaRef = useRef({ startX: 0, startY: 0, active: false, isOwn: false });
   const swipePulseRef = useRef(null);
-  const presenceRef = useRef(null);
   const loadingOlderRef = useRef(false);
-  const typingTimeoutRef = useRef(null);
-  const [isTyping, setIsTyping] = useState(false);
   const lastMessageRef = useRef(null);
   const forceScrollRef = useRef(false);
 
@@ -109,15 +109,13 @@ export default function Home() {
   };
 
   const isConfigured = Boolean(
-    process.env.NEXT_PUBLIC_SUPABASE_URL &&
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
-      process.env.NEXT_PUBLIC_CHAT_PASSWORD
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY && process.env.NEXT_PUBLIC_CHAT_PASSWORD
   );
 
   useEffect(() => {
     if (!isConfigured) {
       setConfigError(
-        'Missing environment variables. Check NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY, and NEXT_PUBLIC_CHAT_PASSWORD.'
+        'Missing environment variables. Check NEXT_PUBLIC_SUPABASE_ANON_KEY and NEXT_PUBLIC_CHAT_PASSWORD.'
       );
     }
   }, [isConfigured]);
@@ -128,6 +126,10 @@ export default function Home() {
     if (saved) {
       setUsername(saved);
     }
+    const savedRoom = window.localStorage.getItem(ROOM_CODE_KEY);
+    if (savedRoom) {
+      setRoomCode(savedRoom);
+    }
     const deviceAuth = window.localStorage.getItem(DEVICE_AUTH_KEY) === 'true';
     if (deviceAuth) {
       setHasDeviceAuth(true);
@@ -137,7 +139,7 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
-    fetch('/falling-phrases.json')
+    fetch('https://texting-tau.vercel.app/falling-phrases.json')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!active || !Array.isArray(data)) return;
@@ -162,14 +164,17 @@ export default function Home() {
   }, [messages]);
 
   useEffect(() => {
-    if (!isAuthed || !username || !isConfigured) return;
+    if (!isAuthed || !username || !roomCode || !isConfigured) return;
     let isMounted = true;
 
-    const loadMessages = async () => {
-      setLoadingMessages(true);
+    const loadMessages = async (showLoading = false) => {
+      if (showLoading) {
+        setLoadingMessages(true);
+      }
       const { data, error } = await supabase
         .from('messages')
         .select('*')
+        .eq('room_code', roomCode)
         .order('created_at', { ascending: false })
         .limit(MESSAGE_PAGE_SIZE);
 
@@ -180,8 +185,12 @@ export default function Home() {
       if (isMounted) {
         const ordered = (data || []).slice().reverse();
         setMessages(ordered);
+        setOnlineUsers(Array.from(new Set([username, ...ordered.map((item) => item.user_name)])));
+        setTypingUsers([]);
         setHasMoreMessages((data || []).length === MESSAGE_PAGE_SIZE);
-        setLoadingMessages(false);
+        if (showLoading) {
+          setLoadingMessages(false);
+        }
       }
     };
 
@@ -190,6 +199,7 @@ export default function Home() {
         .from('user_reads')
         .select('last_read_at')
         .eq('username', username)
+        .eq('room_code', roomCode)
         .maybeSingle();
 
       if (data?.last_read_at && isMounted) {
@@ -197,79 +207,18 @@ export default function Home() {
       }
     };
 
-    loadMessages();
+    loadMessages(true);
     loadReads();
-
-    const channel = supabase
-      .channel('messages')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'messages' },
-        (payload) => {
-          const incoming = payload.new;
-          if (!incoming) return;
-
-          setMessages((prev) => {
-            const exists = prev.find((item) => item.id === incoming.id);
-            let next;
-            if (exists) {
-              next = prev.map((item) => (item.id === incoming.id ? incoming : item));
-            } else {
-              next = [...prev, incoming];
-            }
-            return next.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-          });
-        }
-      )
-      .subscribe();
+    const poll = window.setInterval(() => {
+      loadMessages();
+      loadReads();
+    }, 2500);
 
     return () => {
       isMounted = false;
-      supabase.removeChannel(channel);
+      window.clearInterval(poll);
     };
-  }, [isAuthed, username, isConfigured]);
-
-  useEffect(() => {
-    if (!isAuthed || !username || !isConfigured) return;
-
-    const presence = supabase.channel('presence', {
-      config: {
-        presence: { key: username }
-      }
-    });
-    presenceRef.current = presence;
-
-    presence.on('presence', { event: 'sync' }, () => {
-      const state = presence.presenceState();
-      const names = [];
-      const typing = [];
-      Object.keys(state).forEach((key) => {
-        state[key].forEach((entry) => {
-          if (entry.username) {
-            names.push(entry.username);
-          }
-          if (entry.typing) {
-            typing.push(entry.username);
-          }
-        });
-      });
-      setOnlineUsers(Array.from(new Set(names)));
-      setTypingUsers(
-        Array.from(new Set(typing)).filter((name) => name && name !== username)
-      );
-    });
-
-    presence.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        presence.track({ username, typing: false, online_at: new Date().toISOString() });
-      }
-    });
-
-    return () => {
-      presenceRef.current = null;
-      supabase.removeChannel(presence);
-    };
-  }, [isAuthed, username, isConfigured]);
+  }, [isAuthed, username, roomCode, isConfigured]);
 
   useEffect(() => {
     if (!messages.length) {
@@ -311,12 +260,12 @@ export default function Home() {
   }, [unread]);
 
   const markRead = async (timestamp) => {
-    if (!username || !isConfigured) return;
+    if (!username || !roomCode || !isConfigured) return;
     const value = timestamp || new Date().toISOString();
     setLastReadAt(value);
     await supabase
       .from('user_reads')
-      .upsert({ username, last_read_at: value }, { onConflict: 'username' });
+      .upsert({ username, room_code: roomCode, last_read_at: value }, { onConflict: 'username,room_code' });
   };
 
   useEffect(() => {
@@ -347,6 +296,7 @@ export default function Home() {
       const { data, error } = await supabase
         .from('messages')
         .select('*')
+        .eq('room_code', roomCode)
         .order('created_at', { ascending: false })
         .lt('created_at', oldest.created_at)
         .limit(MESSAGE_PAGE_SIZE);
@@ -398,14 +348,23 @@ export default function Home() {
     }
 
     const candidate = username || usernameInput.trim();
+    const nextRoomCode = roomCode || roomCodeInput.trim();
     if (!candidate) {
       setAuthError('Choose a username to continue.');
+      return;
+    }
+    if (!nextRoomCode) {
+      setAuthError('Enter a room code to continue.');
       return;
     }
 
     if (!username) {
       window.localStorage.setItem(USERNAME_KEY, candidate);
       setUsername(candidate);
+    }
+    if (!roomCode) {
+      window.localStorage.setItem(ROOM_CODE_KEY, nextRoomCode);
+      setRoomCode(nextRoomCode);
     }
 
     window.localStorage.setItem(DEVICE_AUTH_KEY, 'true');
@@ -480,6 +439,7 @@ export default function Home() {
         .from('messages')
         .update({ content: trimmed, edited_at: new Date().toISOString() })
         .eq('id', editingId)
+        .eq('room_code', roomCode)
         .select('*')
         .single();
       if (data) {
@@ -506,7 +466,7 @@ export default function Home() {
         const path = `${messageId}/${Date.now()}-${safeName}`;
         const { error } = await supabase.storage
           .from(UPLOAD_BUCKET)
-          .upload(path, item.file);
+          .upload(`${roomCode}/${path}`, item.file);
         if (error) {
           console.error(error);
           continue;
@@ -519,7 +479,7 @@ export default function Home() {
           type: item.file.type,
           size: item.file.size,
           url: urlData.publicUrl,
-          path
+          path: `${roomCode}/${path}`
         });
       }
     }
@@ -533,6 +493,7 @@ export default function Home() {
       .from('messages')
       .insert({
         id: messageId,
+        room_code: roomCode,
         content: trimmed || null,
         user_name: username,
         reply_to: replyTo?.id || null,
@@ -552,10 +513,6 @@ export default function Home() {
     clearPendingImages();
     setSending(false);
     markRead(new Date().toISOString());
-    if (presenceRef.current && isTyping) {
-      setIsTyping(false);
-      presenceRef.current.track({ username, typing: false, online_at: new Date().toISOString() });
-    }
   };
 
   const handleKeyDown = (event) => {
@@ -566,38 +523,7 @@ export default function Home() {
   };
 
   const updateTyping = (value) => {
-    if (!presenceRef.current || !username) return;
-    const hasText = value.trim().length > 0;
-    if (!hasText) {
-      if (isTyping) {
-        setIsTyping(false);
-        presenceRef.current.track({
-          username,
-          typing: false,
-          online_at: new Date().toISOString()
-        });
-      }
-      return;
-    }
-    if (!isTyping) {
-      setIsTyping(true);
-      presenceRef.current.track({
-        username,
-        typing: true,
-        online_at: new Date().toISOString()
-      });
-    }
-    if (typingTimeoutRef.current) {
-      window.clearTimeout(typingTimeoutRef.current);
-    }
-    typingTimeoutRef.current = window.setTimeout(() => {
-      setIsTyping(false);
-      presenceRef.current?.track({
-        username,
-        typing: false,
-        online_at: new Date().toISOString()
-      });
-    }, 1400);
+    return value;
   };
 
   const startReply = (message) => {
@@ -630,7 +556,8 @@ export default function Home() {
     await supabase
       .from('messages')
       .update(deleted)
-      .eq('id', messageId);
+      .eq('id', messageId)
+      .eq('room_code', roomCode);
     setMessages((prev) =>
       prev.map((item) => (item.id === messageId ? { ...item, ...deleted } : item))
     );
@@ -665,7 +592,11 @@ export default function Home() {
       )
     );
 
-    await supabase.from('messages').update({ reactions: nextReactions }).eq('id', messageId);
+    await supabase
+      .from('messages')
+      .update({ reactions: nextReactions })
+      .eq('id', messageId)
+      .eq('room_code', roomCode);
   };
 
   const promptCustomReaction = (messageId) => {
@@ -761,7 +692,7 @@ export default function Home() {
         <div className="auth-card">
           <h1 className="auth-title">Neniboo Chat</h1>
           <p className="auth-subtitle">
-            Add your Supabase credentials and shared password to continue.
+            Add your credentials and shared password to continue.
           </p>
           {configError && <div className="error-text">{configError}</div>}
         </div>
@@ -769,7 +700,7 @@ export default function Home() {
     );
   }
 
-  if (!isAuthed || !username) {
+  if (!isAuthed || !username || !roomCode) {
     return (
       <main className="app-shell">
         <form className="auth-card" onSubmit={handleAuth}>
@@ -790,6 +721,19 @@ export default function Home() {
                 onChange={(event) => setUsernameInput(event.target.value)}
                 placeholder="Choose a name"
                 maxLength={30}
+                autoComplete="off"
+              />
+            </div>
+          )}
+          {!roomCode && (
+            <div className="auth-field">
+              <label htmlFor="roomCode">Room code</label>
+              <input
+                id="roomCode"
+                value={roomCodeInput}
+                onChange={(event) => setRoomCodeInput(event.target.value)}
+                placeholder="Enter room code"
+                maxLength={60}
                 autoComplete="off"
               />
             </div>
@@ -824,6 +768,18 @@ export default function Home() {
                 Use a different name
               </button>
             )}
+            {roomCode && (
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => {
+                  window.localStorage.removeItem(ROOM_CODE_KEY);
+                  setRoomCode('');
+                }}
+              >
+                Join a different room
+              </button>
+            )}
           </div>
         </form>
       </main>
@@ -832,7 +788,7 @@ export default function Home() {
 
   const composerValue = editingId ? editingText : newMessage;
   const hasContext = Boolean(replyTo || editingId);
-  const presenceUsers = onlineUsers.length ? onlineUsers : [];
+  const presenceUsers = onlineUsers.length ? onlineUsers : [username];
 
   return (
     <main className="app-shell">

@@ -3,6 +3,7 @@ create extension if not exists "uuid-ossp";
 create table if not exists public.messages (
   id uuid primary key default uuid_generate_v4(),
   created_at timestamptz not null default now(),
+  room_code text not null default 'main',
   user_name text not null,
   content text,
   reply_to uuid references public.messages(id) on delete set null,
@@ -13,12 +14,35 @@ create table if not exists public.messages (
 );
 
 create index if not exists messages_created_at_idx on public.messages (created_at);
+create index if not exists messages_room_created_idx on public.messages (room_code, created_at);
 create index if not exists messages_reply_to_idx on public.messages (reply_to);
 
 create table if not exists public.user_reads (
   username text primary key,
+  room_code text not null default 'main',
   last_read_at timestamptz not null default now()
 );
+
+alter table public.messages
+  add column if not exists room_code text not null default 'main';
+
+alter table public.user_reads
+  add column if not exists room_code text not null default 'main';
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_constraint
+    where conname = 'user_reads_pkey'
+      and conrelid = 'public.user_reads'::regclass
+  ) then
+    alter table public.user_reads drop constraint user_reads_pkey;
+  end if;
+end $$;
+
+alter table public.user_reads
+  add primary key (username, room_code);
 
 alter table public.messages disable row level security;
 alter table public.user_reads disable row level security;
