@@ -6,7 +6,7 @@ import { supabase } from '../lib/supabaseClient';
 const USERNAME_KEY = 'chat_username';
 const ROOM_CODE_KEY = 'chat_room_code';
 const ALLOWED_ROOM_CODES = new Set(['neniboo!', 'hasitBandaru!']);
-const DEFAULT_HEADER_PHRASE = 'If no one told u today, i think u so cute muah!!';
+const DEFAULT_HEADER_PHRASE = 'Private room chat';
 
 const EMOJIS = ['😂', '👍', '😮', '😢', '😡'];
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
@@ -242,25 +242,6 @@ export default function Home() {
     if (saved && savedRoom && ALLOWED_ROOM_CODES.has(savedRoom)) {
       setIsAuthed(true);
     }
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    fetch('https://texting-tau.vercel.app/falling-phrases.json')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!active || !Array.isArray(data)) return;
-        const phrases = data.filter(
-          (entry) => typeof entry === 'string' && entry.trim().length > 0
-        );
-        if (phrases.length === 0) return;
-        setHeaderPhrase(phrases[Math.floor(Math.random() * phrases.length)]);
-      })
-      .catch(() => {});
-
-    return () => {
-      active = false;
-    };
   }, []);
 
   const messageMap = useMemo(() => {
