@@ -21,10 +21,18 @@ const ENCRYPTION_PREFIX = 'enc:v1:';
 const ENCRYPTION_SALT = 'neniboo-chat-e2ee-salt-v1';
 const ENCRYPTION_ITERATIONS = 250000;
 
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
+const encodeUtf8 = (value) => {
+  if (typeof TextEncoder === 'undefined') return null;
+  return new TextEncoder().encode(value);
+};
+
+const decodeUtf8 = (bytes) => {
+  if (typeof TextDecoder === 'undefined') return '';
+  return new TextDecoder().decode(bytes);
+};
 
 const bytesToBase64 = (bytes) => {
+  if (typeof btoa === 'undefined') return '';
   let binary = '';
   bytes.forEach((byte) => {
     binary += String.fromCharCode(byte);
@@ -33,6 +41,7 @@ const bytesToBase64 = (bytes) => {
 };
 
 const base64ToBytes = (value) => {
+  if (typeof atob === 'undefined') return new Uint8Array();
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {
@@ -147,9 +156,15 @@ export default function Home() {
       return null;
     }
 
+    const codeBytes = encodeUtf8(code);
+    const saltBytes = encodeUtf8(ENCRYPTION_SALT);
+    if (!codeBytes || !saltBytes) {
+      return null;
+    }
+
     const keyMaterial = await window.crypto.subtle.importKey(
       'raw',
-      textEncoder.encode(code),
+      codeBytes,
       'PBKDF2',
       false,
       ['deriveKey']
@@ -158,7 +173,7 @@ export default function Home() {
     const key = await window.crypto.subtle.deriveKey(
       {
         name: 'PBKDF2',
-        salt: textEncoder.encode(ENCRYPTION_SALT),
+        salt: saltBytes,
         iterations: ENCRYPTION_ITERATIONS,
         hash: 'SHA-256'
       },
@@ -173,18 +188,27 @@ export default function Home() {
   };
 
   const encryptMessageContent = async (value) => {
-    if (!value || !roomCode) return value;
-    if (typeof window === 'undefined' || !window.crypto?.subtle) return value;
-    const key = await getEncryptionKey(roomCode);
-    if (!key) return value;
+    try {
+      if (!value || !roomCode) return value;
+      if (typeof window === 'undefined' || !window.crypto?.subtle) return value;
+      const key = await getEncryptionKey(roomCode);
+      if (!key) return value;
+      const plainBytes = encodeUtf8(value);
+      if (!plainBytes) return value;
 
-    const iv = window.crypto.getRandomValues(new Uint8Array(12));
-    const ciphertext = await window.crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv },
-      key,
-      textEncoder.encode(value)
-    );
-    return `${ENCRYPTION_PREFIX}${bytesToBase64(iv)}.${bytesToBase64(new Uint8Array(ciphertext))}`;
+      const iv = window.crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await window.crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        plainBytes
+      );
+      const ivBase64 = bytesToBase64(iv);
+      const cipherBase64 = bytesToBase64(new Uint8Array(ciphertext));
+      if (!ivBase64 || !cipherBase64) return value;
+      return `${ENCRYPTION_PREFIX}${ivBase64}.${cipherBase64}`;
+    } catch {
+      return value;
+    }
   };
 
   const decryptMessageContent = async (value) => {
@@ -208,7 +232,7 @@ export default function Home() {
         key,
         ciphertext
       );
-      return textDecoder.decode(plaintext);
+      return decodeUtf8(plaintext);
     } catch {
       return '[Unable to decrypt message]';
     }
