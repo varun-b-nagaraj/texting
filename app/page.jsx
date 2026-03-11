@@ -7,6 +7,8 @@ const USERNAME_KEY = 'chat_username';
 const ROOM_CODE_KEY = 'chat_room_code';
 const ALLOWED_ROOM_CODES = new Set(['neniboo!', 'hasitBandaru!']);
 const DEFAULT_HEADER_PHRASE = 'Private room chat';
+const NENIBOO_ROOM_CODE = 'neniboo!';
+const HASIT_ROOM_CODE = 'hasitBandaru!';
 
 const EMOJIS = ['😂', '👍', '😮', '😢', '😡'];
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
@@ -879,7 +881,7 @@ export default function Home() {
   const composerValue = editingId ? editingText : newMessage;
   const hasContext = !isRestrictedRoom && Boolean(replyTo || editingId);
   const presenceUsers = onlineUsers.length ? onlineUsers : [username];
-  const roomSubtitle = isRestrictedRoom ? 'Room: hasitBandaru!' : headerPhrase;
+  const roomSubtitle = roomCode === HASIT_ROOM_CODE ? 'Room: hasitBandaru!' : headerPhrase;
   const handleLogout = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem(ROOM_CODE_KEY);
@@ -1181,3 +1183,34 @@ export default function Home() {
     </main>
   );
 }
+  useEffect(() => {
+    let active = true;
+
+    if (roomCode !== NENIBOO_ROOM_CODE) {
+      setHeaderPhrase(DEFAULT_HEADER_PHRASE);
+      return () => {
+        active = false;
+      };
+    }
+
+    fetch('/falling-phrases.json')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !Array.isArray(data)) return;
+        const phrases = data.filter(
+          (entry) => typeof entry === 'string' && entry.trim().length > 0
+        );
+        if (phrases.length === 0) {
+          setHeaderPhrase(DEFAULT_HEADER_PHRASE);
+          return;
+        }
+        setHeaderPhrase(phrases[Math.floor(Math.random() * phrases.length)]);
+      })
+      .catch(() => {
+        setHeaderPhrase(DEFAULT_HEADER_PHRASE);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [roomCode]);
